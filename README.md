@@ -68,6 +68,11 @@ Install [JAX][jax] and then the other dependencies:
 pip install -r requirements.txt
 ```
 
+For Windows use this command:
+```sh
+pip install -r requirements.txt -f https://whls.blob.core.windows.net/unstable/index.html --use-deprecated legacy-resolver
+```
+
 Simple training script:
 
 ```sh
