@@ -5,7 +5,7 @@ from setuptools import find_namespace_packages
 
 setuptools.setup(
     name='dreamerv3',
-    version='1.1.0',
+    version='1.1.1',
     description='Mastering Diverse Domains through World Models',
     url='http://github.com/danijar/dreamerv3',
     long_description=pathlib.Path('README.md').read_text(),
