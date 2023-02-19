@@ -2,6 +2,7 @@ import contextlib
 import functools
 import inspect
 import re
+import threading
 from functools import partial as bind
 
 import jax
@@ -19,18 +20,21 @@ __version__ = '0.9.0'
 # in this global variable. The pure() wrapper populates this global variable
 # with the provided state, calls the inner function, and then the takes the
 # resulting state out of the global variable to return it back to the user.
-CONTEXT = None
+# To allow multi-threaded programs to use impure functions in parallel, the
+# context is a dictionary with a slot for each thread identifier.
+CONTEXT = {}
 
 
 class Context(dict):
 
-  def __init__(self, entries, rng, create, modify, ignore, reserve):
+  def __init__(self, entries, rng, create, modify, ignore, reserve, name):
     super().__init__(entries)
     self.create = create  # Allow creating new state entries.
     self.modify = modify  # Allow modifying existing state entries.
     self.ignore = ignore  # Ignore modifications to existing state entries.
     self.rng = rng
     self.reserve = reserve
+    self.name = name
 
   def update(self, entries):
     for key, value in dict(entries).items():
@@ -40,11 +44,16 @@ class Context(dict):
     if not self.modify:
       raise RuntimeError(
           'Cannot modify state entries here. If you want to modify '
-          'state inside of scan() set modify=True.')
+          'state inside of scan() set modify=True. ' +
+          f'You were trying to set {key} to shape {value.shape} and ' +
+          f'dtype {value.dtype}.')
     if self.ignore and key in self:
       return  # Do not overwrite existing entries.
     if not self.create and key not in self:
-      raise RuntimeError('Can only create state entries during first call.')
+      raise RuntimeError(
+          'Can only create state entries during first call. ' +
+          f'You were trying to set {key} to shape {value.shape} and ' +
+          f'dtype {value.dtype}.')
     super().__setitem__(key, value)
 
 
@@ -55,30 +64,37 @@ def pure(fun, nested=False):
   `out, state = fun(state, rng, *args, **kwargs)`."""
   def purified(
       state, rng, *args, create=None, modify=None, ignore=None, **kwargs):
-    global CONTEXT
-    if CONTEXT:
-      create = create if create is not None else CONTEXT.create
-      modify = modify if modify is not None else CONTEXT.modify
-      ignore = ignore if ignore is not None else CONTEXT.ignore
-      assert CONTEXT.create or not create, 'Parent context disabled create.'
-      assert CONTEXT.modify or not modify, 'Parent context disabled modify.'
-      assert not CONTEXT.ignore or ignore, 'Parent context enabled ignore.'
+    context = CONTEXT.get(threading.get_ident(), None)
+    if context:
+      create = create if create is not None else context.create
+      modify = modify if modify is not None else context.modify
+      ignore = ignore if ignore is not None else context.ignore
+      assert context.create or not create, 'Parent context disabled create.'
+      assert context.modify or not modify, 'Parent context disabled modify.'
+      assert not context.ignore or ignore, 'Parent context enabled ignore.'
     else:
       create = create if create is not None else True
       modify = modify if modify is not None else True
       ignore = ignore if ignore is not None else False
     if not isinstance(state, dict):
       raise ValueError('Must provide a dict as state.')
-    if CONTEXT and (not nested):
-      raise RuntimeError('If you want to nest run() calls, use nested=True.')
-    before = CONTEXT
+    if context and (not nested):
+      raise RuntimeError(
+          f'You are trying to call pure {fun.__name__}() inside pure '
+          f'{context.name}(). Is that intentional? If you want to nest pure '
+          f'functions, use pure(..., nested=True) for the inner function.')
+      # raise RuntimeError(
+      #     f'If you want to nest run() calls, use nested=True. ({context})')
+    before = context
     try:
-      CONTEXT = Context(state.copy(), rng, create, modify, ignore, [])
+      name = fun.__name__
+      context = Context(state.copy(), rng, create, modify, ignore, [], name)
+      CONTEXT[threading.get_ident()] = context
       out = fun(*args, **kwargs)
-      state = dict(CONTEXT)
+      state = dict(context)
       return out, state
     finally:
-      CONTEXT = before
+      CONTEXT[threading.get_ident()] = before
   purified.pure = True
   return purified
 
@@ -87,10 +103,10 @@ def context():
   """Access and modify the global context from within an impure function. For
   advanced users only. Prefer to use module methods to access and modify state
   and rng() to get the next RNG key."""
-  global CONTEXT
-  if CONTEXT is None:
+  context = CONTEXT.get(threading.get_ident(), None)
+  if context is None:
     raise RuntimeError('Wrap impure functions in pure() before running them.')
-  return CONTEXT
+  return context
 
 
 @jax.named_scope('rng')
@@ -161,31 +177,34 @@ def jit(fun, static=None, **kwargs):
   static = static or ()
 
   @bind(jax.jit, static_argnums=[0], **kwargs)
-  def init(statics, rng, *args, **kwargs):
+  def init(statics, rng, *args, **kw):
     # Return only state so JIT can remove dead code for fast initialization.
-    s = fun({}, rng, *args, ignore=True, **dict(statics), **kwargs)[1]
+    s = fun({}, rng, *args, ignore=True, **dict(statics), **kw)[1]
     return s
 
   @bind(jax.jit, static_argnums=[0], **kwargs)
-  def apply(statics, state, rng, *args, **kwargs):
-    return fun(state, rng, *args, create=False, **dict(statics), **kwargs)
+  def apply(statics, state, rng, *args, **kw):
+    return fun(state, rng, *args, create=False, **dict(statics), **kw)
 
   @functools.wraps(fun)
-  def wrapper(state, rng, *args, **kwargs):
-    if any([name not in kwargs for name in static]):
+  def wrapper(state, rng, *args, init_only=False, **kw):
+    if any([name not in kw for name in static]):
       raise ValueError('Please pass all static arguments by keyword.')
     state = state.copy()
-    statics = tuple(sorted([(k, v) for k, v in kwargs.items() if k in static]))
-    kwargs = {k: v for k, v in kwargs.items() if k not in static}
+    statics = tuple(sorted([(k, v) for k, v in kw.items() if k in static]))
+    kw = {k: v for k, v in kw.items() if k not in static}
     if not hasattr(wrapper, 'keys'):
-      created = init(statics, rng, *args, **kwargs)
+      created = init(statics, rng, *args, **kw)
       wrapper.keys = set(created.keys())
       for key, value in created.items():
         if key not in state:
           state[key] = value
-    selected = {k: v for k, v in state.items() if k in wrapper.keys}
-    out, updated = apply(statics, selected, rng, *args, **kwargs)
-    return out, {**state, **updated}
+    if init_only:
+      return state
+    else:
+      selected = {k: v for k, v in state.items() if k in wrapper.keys}
+      out, updated = apply(statics, selected, rng, *args, **kw)
+      return out, {**state, **updated}
   return wrapper
 
 
@@ -196,30 +215,32 @@ def pmap(fun, axis_name=None, static=None, **kwargs):
     raise ValueError('Use pure() before applying jit().')
   static = static or ()
 
-  @bind(jax.pmap, axis_name=axis_name, static_broadcasted_argnums=[0], **kwargs)
-  def init(statics, rng, *args, **kwargs):
+  @bind(
+      jax.pmap, axis_name=axis_name, static_broadcasted_argnums=[0], **kwargs)
+  def init(statics, rng, *args, **kw):
     # Return only state so JIT can remove dead code for fast initialization.
-    return fun({}, rng, *args, ignore=True, **dict(statics), **kwargs)[1]
+    return fun({}, rng, *args, ignore=True, **dict(statics), **kw)[1]
 
-  @bind(jax.pmap, axis_name=axis_name, static_broadcasted_argnums=[0], **kwargs)
-  def apply(statics, state, rng, *args, **kwargs):
-    return fun(state, rng, *args, create=False, **dict(statics), **kwargs)
+  @bind(
+      jax.pmap, axis_name=axis_name, static_broadcasted_argnums=[0], **kwargs)
+  def apply(statics, state, rng, *args, **kw):
+    return fun(state, rng, *args, create=False, **dict(statics), **kw)
 
   @functools.wraps(fun)
-  def wrapper(state, rng, *args, **kwargs):
-    if any([name not in kwargs for name in static]):
+  def wrapper(state, rng, *args, **kw):
+    if any([name not in kw for name in static]):
       raise ValueError('Please pass all static arguments by keyword.')
     state = state.copy()
-    statics = tuple(sorted([(k, v) for k, v in kwargs.items() if k in static]))
-    kwargs = {k: v for k, v in kwargs.items() if k not in static}
+    statics = tuple(sorted([(k, v) for k, v in kw.items() if k in static]))
+    kw = {k: v for k, v in kw.items() if k not in static}
     if not hasattr(wrapper, 'keys'):
-      created = init(statics, rng, *args, **kwargs)
+      created = init(statics, rng, *args, **kw)
       wrapper.keys = set(created.keys())
       for key, value in created.items():
         if key not in state:
           state[key] = value
     selected = {k: v for k, v in state.items() if k in wrapper.keys}
-    out, updated = apply(statics, selected, rng, *args, **kwargs)
+    out, updated = apply(statics, selected, rng, *args, **kw)
     return out, {**state, **updated}
   return wrapper
 
@@ -288,7 +309,8 @@ def scope(name, absolute=False):
   names of state entries unique."""
   global SCOPE
   if SCOPE is None:
-    raise RuntimeError('Run stateful functions with run().')
+    raise RuntimeError(
+        'Purify stateful functions with fn = pure(fn) before running them.')
   outside = SCOPE
   if absolute:
     SCOPE = name

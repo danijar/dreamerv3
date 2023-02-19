@@ -1,6 +1,4 @@
-import collections
 import re
-import warnings
 
 import embodied
 import numpy as np
@@ -62,25 +60,18 @@ def train_eval(
   driver_eval.on_episode(lambda ep, worker: per_episode(ep, mode='eval'))
 
   random_agent = embodied.RandomAgent(train_env.act_space)
-  fill = max(args.batch_steps, args.eval_fill - len(eval_replay))
-  if fill:
-    print(f'Fill eval dataset ({fill} steps).')
-    driver_eval(random_agent.policy, steps=fill)
-  fill = max(args.batch_steps, args.train_fill - len(train_replay))
-  if fill:
-    print(f'Fill train dataset ({fill} steps).')
-    driver_train(random_agent.policy, steps=fill)
+  print('Prefill train dataset.')
+  while len(train_replay) < max(args.batch_steps, args.train_fill):
+    driver_train(random_agent.policy, steps=100)
+  print('Prefill eval dataset.')
+  while len(eval_replay) < max(args.batch_steps, args.eval_fill):
+    driver_eval(random_agent.policy, steps=100)
+  logger.add(metrics.result())
   logger.write()
 
   dataset_train = iter(agent.dataset(train_replay.dataset))
   dataset_eval = iter(agent.dataset(eval_replay.dataset))
   state = [None]  # To be writable from train step function below.
-  assert args.pretrain > 0  # At least one step to initialize variables.
-  for _ in range(args.pretrain):
-    with timer.scope('dataset_train'):
-      batch = next(dataset_train)
-    _, state[0], _ = agent.train(batch, state[0])
-
   batch = [None]
   def train_step(tran, worker):
     for _ in range(should_train(step)):
@@ -90,6 +81,7 @@ def train_eval(
       metrics.add(mets, prefix='train')
       if 'priority' in outs:
         train_replay.prioritize(outs['key'], outs['priority'])
+    agent.sync()
     if should_log(step):
       logger.add(metrics.result())
       logger.add(agent.report(batch[0]), prefix='report')
@@ -107,6 +99,8 @@ def train_eval(
   checkpoint.agent = agent
   checkpoint.train_replay = train_replay
   checkpoint.eval_replay = eval_replay
+  if args.from_checkpoint:
+    checkpoint.load(args.from_checkpoint)
   checkpoint.load_or_save()
   should_save(step)  # Register that we jused saved.
 
@@ -119,7 +113,7 @@ def train_eval(
       print('Starting evaluation at step', int(step))
       driver_eval.reset()
       driver_eval(policy_eval, episodes=max(len(eval_env), args.eval_eps))
-    driver_train(policy_train, steps=1000)
+    driver_train(policy_train, steps=100)
     if should_save(step):
       checkpoint.save()
   logger.write()

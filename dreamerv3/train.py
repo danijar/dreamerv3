@@ -12,6 +12,8 @@ warnings.filterwarnings('ignore', '.*truncated to dtype int32.*')
 directory = pathlib.Path(__file__).resolve()
 directory = directory.parent
 sys.path.append(str(directory.parent))
+sys.path.append(str(directory.parent.parent))
+sys.path.append(str(directory.parent.parent.parent))
 __package__ = directory.name
 
 import embodied
@@ -40,14 +42,14 @@ def main(argv=None):
 
     if args.script == 'train':
       replay = make_replay(config, logdir / 'replay')
-      env = make_envs(config, 'train')
+      env = make_envs(config)
       cleanup.append(env)
       agent = agt.Agent(env.obs_space, env.act_space, step, config)
       embodied.run.train(agent, env, replay, logger, args)
 
     elif args.script == 'train_save':
       replay = make_replay(config, logdir / 'replay')
-      env = make_envs(config, 'train')
+      env = make_envs(config)
       cleanup.append(env)
       agent = agt.Agent(env.obs_space, env.act_space, step, config)
       embodied.run.train_save(agent, env, replay, logger, args)
@@ -55,8 +57,8 @@ def main(argv=None):
     elif args.script == 'train_eval':
       replay = make_replay(config, logdir / 'replay')
       eval_replay = make_replay(config, logdir / 'eval_replay', is_eval=True)
-      env = make_envs(config, 'train')
-      eval_env = make_envs(config, 'eval')
+      env = make_envs(config)
+      eval_env = make_envs(config)  # mode='eval'
       cleanup += [env, eval_env]
       agent = agt.Agent(env.obs_space, env.act_space, step, config)
       embodied.run.train_eval(
@@ -68,13 +70,19 @@ def main(argv=None):
         assert not config.train.eval_fill
         eval_replay = make_replay(config, config.eval_dir, is_eval=True)
       else:
-        assert args.eval_fill
+        assert 0 < args.eval_fill <= config.replay_size // 10, args.eval_fill
         eval_replay = make_replay(config, logdir / 'eval_replay', is_eval=True)
-      env = make_envs(config, 'train')
+      env = make_envs(config)
       cleanup.append(env)
       agent = agt.Agent(env.obs_space, env.act_space, step, config)
       embodied.run.train_holdout(
           agent, env, replay, eval_replay, logger, args)
+
+    elif args.script == 'eval_only':
+      env = make_envs(config)  # mode='eval'
+      cleanup.append(env)
+      agent = agt.Agent(env.obs_space, env.act_space, step, config)
+      embodied.run.eval_only(agent, env, logger, args)
 
     else:
       raise NotImplementedError(args.script)
@@ -96,12 +104,18 @@ def make_logger(parsed, logdir, step, config):
   return logger
 
 
-def make_replay(config, directory=None, is_eval=False, **kwargs):
+def make_replay(
+    config, directory=None, is_eval=False, rate_limit=False, **kwargs):
+  assert config.replay == 'uniform' or not rate_limit
   length = config.batch_length
   size = config.replay_size // 10 if is_eval else config.replay_size
   if config.replay == 'uniform' or is_eval:
-    replay = embodied.replay.Uniform(
-        length, size, directory, config.replay_online)
+    kw = {'online': config.replay_online}
+    if rate_limit and config.run.train_ratio > 0:
+      kw['samples_per_insert'] = config.run.train_ratio / config.batch_length
+      kw['tolerance'] = 10 * config.batch_size
+      kw['min_size'] = config.batch_size
+    replay = embodied.replay.Uniform(length, size, directory, **kw)
   elif config.replay == 'reverb':
     replay = embodied.replay.Reverb(length, size, directory)
   elif config.replay == 'chunks':
@@ -111,14 +125,11 @@ def make_replay(config, directory=None, is_eval=False, **kwargs):
   return replay
 
 
-def make_envs(config, mode='train'):
+def make_envs(config, **overrides):
   suite, task = config.task.split('_', 1)
   ctors = []
   for index in range(config.envs.amount):
-    kwargs = config.env.get(suite, {})
-    if 'seed' in kwargs:
-      kwargs = kwargs.update(seed=hash((config.seed, index)) % (2 ** 31 - 1))
-    ctor = lambda: wrap_env(make_env(config.task, kwargs), config.wrapper)
+    ctor = lambda: make_env(config, **overrides)
     if config.envs.parallel != 'none':
       ctor = bind(embodied.Parallel, ctor, config.envs.parallel)
     if config.envs.restart:
@@ -128,11 +139,11 @@ def make_envs(config, mode='train'):
   return embodied.BatchEnv(envs, parallel=(config.envs.parallel != 'none'))
 
 
-def make_env(task, kwargs):
+def make_env(config, **overrides):
   # You can add custom environments by creating and returning the environment
   # instance here. Environments with different interfaces can be converted
   # using `embodied.envs.from_gym.FromGym` and `embodied.envs.from_dm.FromDM`.
-  suite, task = task.split('_', 1)
+  suite, task = config.task.split('_', 1)
   ctor = {
       'dummy': 'embodied.envs.dummy:Dummy',
       'gym': 'embodied.envs.from_gym:FromGym',
@@ -149,10 +160,14 @@ def make_env(task, kwargs):
     module, cls = ctor.split(':')
     module = importlib.import_module(module)
     ctor = getattr(module, cls)
-  return ctor(task, **kwargs)
+  kwargs = config.env.get(suite, {})
+  kwargs.update(overrides)
+  env = ctor(task, **kwargs)
+  return wrap_env(env, config)
 
 
-def wrap_env(env, args):
+def wrap_env(env, config):
+  args = config.wrapper
   for name, space in env.act_space.items():
     if name == 'reset':
       continue

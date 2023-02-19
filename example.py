@@ -34,7 +34,7 @@ def main():
   from embodied.envs import from_gym
   env = crafter.Env()  # Replace this with your Gym env.
   env = from_gym.FromGym(env)
-  env = dreamerv3.wrap_env(env, config.wrapper)
+  env = dreamerv3.wrap_env(env, config)
   env = embodied.BatchEnv([env], parallel=False)
 
   agent = dreamerv3.Agent(env.obs_space, env.act_space, step, config)

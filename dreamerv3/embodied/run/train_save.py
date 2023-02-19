@@ -1,7 +1,5 @@
-import collections
 import io
 import re
-import warnings
 from datetime import datetime
 
 import embodied
@@ -42,8 +40,6 @@ def train_save(agent, env, replay, logger, args):
         'length': length,
         'score': score,
         'sum_abs_reward': sum_abs_reward,
-        # TODO
-        # 'reward_rate': (ep['reward'] - ep['reward'].min() >= 0.1).mean(),
         'reward_rate': (np.abs(ep['reward']) >= 0.5).mean(),
     }, prefix='episode')
     print(f'Episode has {length} steps and return {score:.1f}.')
@@ -85,22 +81,15 @@ def train_save(agent, env, replay, logger, args):
   driver.on_step(lambda tran, _: step.increment())
   driver.on_step(replay.add)
 
-  train_fill = max(args.batch_steps, args.train_fill - len(replay))
-  if train_fill:
-    print(f'Fill train dataset ({train_fill} steps).')
-    random_agent = embodied.RandomAgent(env.act_space)
-    driver(random_agent.policy, steps=train_fill)
+  print('Prefill train dataset.')
+  random_agent = embodied.RandomAgent(env.act_space)
+  while len(replay) < max(args.batch_steps, args.train_fill):
+    driver(random_agent.policy, steps=100)
   logger.add(metrics.result())
   logger.write()
 
   dataset = iter(agent.dataset(replay.dataset))
   state = [None]  # To be writable from train step function below.
-  assert args.pretrain > 0  # At least one step to initialize variables.
-  for _ in range(args.pretrain):
-    with timer.scope('dataset'):
-      batch = next(dataset)
-    _, state[0], _ = agent.train(batch, state[0])
-
   batch = [None]
   def train_step(tran, worker):
     for _ in range(should_train(step)):
@@ -110,6 +99,7 @@ def train_save(agent, env, replay, logger, args):
       metrics.add(mets, prefix='train')
       if 'priority' in outs:
         replay.prioritize(outs['key'], outs['priority'])
+    agent.sync()
     if should_log(step):
       agg = metrics.result()
       report = agent.report(batch[0])
@@ -126,6 +116,8 @@ def train_save(agent, env, replay, logger, args):
   checkpoint.step = step
   checkpoint.agent = agent
   checkpoint.replay = replay
+  if args.from_checkpoint:
+    checkpoint.load(args.from_checkpoint)
   checkpoint.load_or_save()
   should_save(step)  # Register that we jused saved.
 
@@ -133,8 +125,7 @@ def train_save(agent, env, replay, logger, args):
   policy = lambda *args: agent.policy(
       *args, mode='explore' if should_expl(step) else 'train')
   while step < args.steps:
-    driver(policy, steps=1000)
+    driver(policy, steps=100)
     if should_save(step):
       checkpoint.save()
   logger.write()
-

@@ -5,7 +5,7 @@ defaults:
   replay: uniform
   replay_size: 1e6
   replay_online: False
-  jax: {platform: gpu, jit: True, precision: float16, prealloc: True, debug_nans: False, parallel: False, logical_cpus: 0, debug: False}
+  jax: {platform: gpu, jit: True, precision: float16, prealloc: True, debug_nans: False, parallel: False, logical_cpus: 0, debug: False, policy_device: 0, train_devices: [0]}
   eval_dir: ''
   filter: '.*'
 
@@ -25,13 +25,13 @@ defaults:
     batch_steps: -1
     train_fill: 0
     eval_fill: 0
-    pretrain: 1
     log_zeros: False
     log_keys_video: [image]
     log_keys_sum: '^$'
     log_keys_mean: '(log_entropy)'
     log_keys_max: '^$'
     sync_every: 120
+    from_checkpoint: ''
 
   # Envs
   envs: {amount: 4, parallel: process, length: 0, reset: True, restart: True, discretize: 0, checks: False}
@@ -232,7 +232,7 @@ debug:
     train_ratio: 32
   batch_size: 8
   batch_length: 12
-  replay_size: 500
+  replay_size: 1e5
   encoder.cnn_depth: 16
   decoder.cnn_depth: 16
   rssm: {deter: 64, units: 64, stoch: 8, classes: 8}

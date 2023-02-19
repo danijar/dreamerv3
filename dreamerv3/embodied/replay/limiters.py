@@ -1,65 +1,108 @@
+import threading
+
+
 class MinSize:
 
   def __init__(self, minimum):
     assert 1 <= minimum, minimum
     self.minimum = minimum
     self.size = 0
+    self.lock = threading.Lock()
+
+  def want_load(self):
+    with self.lock:
+      self.size += 1
+    return True, 'ok'
 
   def want_insert(self):
-    self.size += 1
-    return True
+    with self.lock:
+      self.size += 1
+    return True, 'ok'
 
   def want_remove(self):
-    assert self.size > 0
-    self.size -= 1
-    return True
+    with self.lock:
+      if self.size < 1:
+        return False, 'is empty'
+      self.size -= 1
+    return True, 'ok'
 
   def want_sample(self):
-    return self.size >= self.minimum
+    if self.size < self.minimum:
+      return False, f'too empty: {self.size} < {self.minimum}'
+    return True, 'ok'
 
 
 class SamplesPerInsert:
 
-  def __init__(self, samples_per_insert, tolerance):
-    # TODO: Make thread-safe.
+  def __init__(self, samples_per_insert, tolerance, minimum=1):
+    assert 1 <= minimum
     self.samples_per_insert = samples_per_insert
-    self.tolerance = tolerance
-    self.available_samples = 0
+    self.minimum = minimum
+    self.avail = -minimum
+    self.min_avail = -tolerance
+    self.max_avail = tolerance * samples_per_insert
+    self.size = 0
+    self.lock = threading.Lock()
+
+  def want_load(self):
+    with self.lock:
+      self.size += 1
+    return True, 'ok'
 
   def want_insert(self):
-    if self.available_samples >= self.tolerance:
-      return False
-    self.available_samples += self.samples_per_insert
-    return True
+    with self.lock:
+      if self.avail >= self.max_avail:
+        return False, f'rate limited: {self.avail} >= {self.max_avail}'
+      self.avail += self.samples_per_insert
+      self.size += 1
+    return True, 'ok'
 
   def want_remove(self):
-    return True
+    with self.lock:
+      if self.size < 1:
+        return False, 'is empty'
+      self.size -= 1
+    return True, 'ok'
 
   def want_sample(self):
-    if self.available_samples <= -self.tolerance:
-      return False
-    self.available_samples -= 1
-    return True
+    with self.lock:
+      if self.size < self.minimum:
+        return False, f'too empty: {self.size} < {self.minimum}'
+      if self.avail <= self.min_avail:
+        return False, f'rate limited: {self.avail} <= {self.min_avail}'
+      self.avail -= 1
+    return True, 'ok'
 
 
 class Queue:
 
   def __init__(self, capacity):
-    # TODO: Make thread-safe.
     assert 1 <= capacity
     self.capacity = capacity
     self.size = 0
+    self.lock = threading.Lock()
+
+  def want_load(self):
+    with self.lock:
+      self.size += 1
+    return True, 'ok'
 
   def want_insert(self):
-    if self.size >= self.capacity:
-      return False
-    self.size += 1
-    return True
+    with self.lock:
+      if self.size >= self.capacity:
+        return False, f'is full: {self.size} >= {self.capacity}'
+      self.size += 1
+    return True, 'ok'
 
   def want_remove(self):
-    assert self.size > 0
-    self.size -= 1
-    return True
+    with self.lock:
+      if self.size < 1:
+        return False, 'is empty'
+      self.size -= 1
+    return True, 'ok'
 
   def want_sample(self):
-    return 0 < self.size <= self.capacity
+    if self.size < 1:
+      return False, 'is empty'
+    else:
+      return True, 'ok'
