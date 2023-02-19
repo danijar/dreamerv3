@@ -41,8 +41,8 @@ RUN pip3 install robodesk
 RUN pip3 install bsuite
 
 # Agent
-RUN pip3 install jax[cuda11_cudnn82] -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
-RUN pip3 install jaxlib
+RUN pip3 install jax[cuda11_cudnn82]==0.3.25 -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+RUN pip3 install jaxlib==0.3.25
 RUN pip3 install tensorflow_probability
 RUN pip3 install optax
 RUN pip3 install tensorflow-cpu
