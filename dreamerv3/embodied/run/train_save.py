@@ -15,15 +15,11 @@ def train_save(agent, env, replay, logger, args):
   should_train = embodied.when.Ratio(args.train_ratio / args.batch_steps)
   should_log = embodied.when.Clock(args.log_every)
   should_save = embodied.when.Clock(args.save_every)
+  should_sync = embodied.when.Every(args.sync_every)
   step = logger.step
   metrics = embodied.Metrics()
-  print('Observation space:')
-  for key, value in env.obs_space.items():
-    if not key.startswith('log_'):
-      print(f'  {key:<16} {value}')
-  print('Action space:')
-  for key, value in env.act_space.items():
-    print(f'  {key:<16} {value}')
+  print('Observation space:', embodied.format(env.obs_space), sep='\n')
+  print('Action space:', embodied.format(env.act_space), sep='\n')
 
   timer = embodied.Timer()
   timer.wrap('agent', agent, ['policy', 'train', 'report', 'save'])
@@ -99,7 +95,8 @@ def train_save(agent, env, replay, logger, args):
       metrics.add(mets, prefix='train')
       if 'priority' in outs:
         replay.prioritize(outs['key'], outs['priority'])
-    agent.sync()
+    if should_sync(step):
+      agent.sync()
     if should_log(step):
       agg = metrics.result()
       report = agent.report(batch[0])
@@ -111,7 +108,7 @@ def train_save(agent, env, replay, logger, args):
       logger.write(fps=True)
   driver.on_step(train_step)
 
-  checkpoint = embodied.Checkpoint(logdir / 'checkpoint.pkl')
+  checkpoint = embodied.Checkpoint(logdir / 'checkpoint.ckpt')
   timer.wrap('checkpoint', checkpoint, ['save', 'load'])
   checkpoint.step = step
   checkpoint.agent = agent

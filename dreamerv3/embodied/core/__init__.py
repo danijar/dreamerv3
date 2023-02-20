@@ -1,6 +1,8 @@
 from .base import Agent, Env, Wrapper, Replay
 
-from .basics import convert, print
+from .basics import convert, treemap, pack, unpack
+from .basics import print_ as print
+from .basics import format_ as format
 
 from .space import Space
 from .path import Path
@@ -19,7 +21,9 @@ from .uuid import uuid
 
 from .batch import BatchEnv
 from .random import RandomAgent
+from .distr import Client, Server, BatchServer
 
 from . import logger
 from . import when
 from . import wrappers
+from . import distr

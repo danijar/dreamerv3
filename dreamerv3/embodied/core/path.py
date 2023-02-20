@@ -151,7 +151,10 @@ class LocalPath(Path):
     shutil.rmtree(self)
 
   def copy(self, dest):
-    shutil.copytree(self, type(self)(dest), dirs_exist_ok=True)
+    if self.isfile():
+      shutil.copy(self, type(self)(dest))
+    else:
+      shutil.copytree(self, type(self)(dest), dirs_exist_ok=True)
 
   def move(self, dest):
     shutil.move(self, dest)

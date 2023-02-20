@@ -1,17 +1,18 @@
 defaults:
 
   seed: 0
+  method: name
   task: dummy_disc
+  logdir: /dev/null
   replay: uniform
   replay_size: 1e6
   replay_online: False
-  jax: {platform: gpu, jit: True, precision: float16, prealloc: True, debug_nans: False, parallel: False, logical_cpus: 0, debug: False, policy_device: 0, train_devices: [0]}
+  jax: {platform: gpu, jit: True, precision: float16, prealloc: True, debug_nans: False, logical_cpus: 0, debug: False, policy_devices: [0], train_devices: [0]}
   eval_dir: ''
   filter: '.*'
 
   # Loop
   run:
-    logdir: /dev/null
     script: train
     steps: 1e10
     expl_until: 0
@@ -22,7 +23,6 @@ defaults:
     eval_eps: 1
     eval_samples: 1
     train_ratio: 32.0
-    batch_steps: -1
     train_fill: 0
     eval_fill: 0
     log_zeros: False
@@ -30,8 +30,11 @@ defaults:
     log_keys_sum: '^$'
     log_keys_mean: '(log_entropy)'
     log_keys_max: '^$'
-    sync_every: 120
     from_checkpoint: ''
+    sync_every: 200
+    # actor_addr: 'tcp://127.0.0.1:5551'
+    actor_addr: 'ipc:///tmp/5551'
+    actor_batch: 32
 
   # Envs
   envs: {amount: 4, parallel: process, length: 0, reset: True, restart: True, discretize: 0, checks: False}
@@ -220,23 +223,37 @@ xlarge:
   .*\.units: 1024
   .*\.layers: 5
 
+multicpu:
+
+  jax:
+    logical_cpus: 8
+    policy_devices: [0, 1]
+    train_devices: [2, 3, 4, 5, 6, 7]
+  run:
+    actor_batch: 4
+  envs:
+    amount: 8
+  batch_size: 12
+  batch_length: 10
+
 debug:
 
   jax: {jit: True, prealloc: False, debug: True, platform: cpu}
-  envs: {restart: False, amount: 2}
+  envs: {restart: False, amount: 3}
   wrapper: {length: 100, checks: True}
   run:
     eval_every: 1000
     log_every: 5
     save_every: 10
     train_ratio: 32
+    actor_batch: 2
   batch_size: 8
   batch_length: 12
   replay_size: 1e5
-  encoder.cnn_depth: 16
-  decoder.cnn_depth: 16
-  rssm: {deter: 64, units: 64, stoch: 8, classes: 8}
+  encoder.cnn_depth: 8
+  decoder.cnn_depth: 8
+  rssm: {deter: 32, units: 16, stoch: 4, classes: 4}
   .*unroll: False
   .*\.layers: 2
-  .*\.units: 64
+  .*\.units: 16
   .*\.wd$: 0.0

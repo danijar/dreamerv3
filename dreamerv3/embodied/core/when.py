@@ -72,7 +72,7 @@ class Clock:
     self._every = every
     self._prev = None
 
-  def __call__(self, step):
+  def __call__(self, step=None):
     if self._every < 0:
       return True
     if self._every == 0:

@@ -78,7 +78,7 @@ Flexible training script:
 
 ```sh
 python dreamerv3/train.py \
-  --run.logdir ~/logdir/$(date "+%Y%m%d-%H%M%S") \
+  --logdir ~/logdir/$(date "+%Y%m%d-%H%M%S") \
   --configs crafter --batch_size 16 --run.train_every 32
 ```
 
@@ -114,7 +114,7 @@ python dreamerv3/train.py \
   them in the replay buffer, return them as observation keys with `log_` prefix
   and enable logging via the `run.log_keys_...` options.
 - To continue stopped training runs, simply run the same command line again and
-  make sure that the `--run.logdir` points to the same directory.
+  make sure that the `--logdir` points to the same directory.
 
 # Disclaimer
 

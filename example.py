@@ -9,18 +9,20 @@ def main():
   config = embodied.Config(dreamerv3.configs['defaults'])
   config = config.update(dreamerv3.configs['medium'])
   config = config.update({
-      'run.logdir': '~/logdir/run1',
+      'logdir': '~/logdir/run1',
       'run.train_ratio': 64,
       'run.log_every': 30,  # Seconds
       'batch_size': 16,
+      'jax.prealloc': False,
       'encoder.mlp_keys': '$^',
       'decoder.mlp_keys': '$^',
       'encoder.cnn_keys': 'image',
       'decoder.cnn_keys': 'image',
       # 'jax.platform': 'cpu',
   })
+  config = embodied.Flags(config).parse()
 
-  logdir = embodied.Path(config.run.logdir)
+  logdir = embodied.Path(config.logdir)
   step = embodied.Counter()
   logger = embodied.Logger(step, [
       embodied.logger.TerminalOutput(),
@@ -40,7 +42,9 @@ def main():
   agent = dreamerv3.Agent(env.obs_space, env.act_space, step, config)
   replay = embodied.replay.Uniform(
       config.batch_length, config.replay_size, logdir / 'replay')
-  args = config.run.update(batch_steps=config.batch_size * config.batch_length)
+  args = embodied.Config(
+      **config.run, logdir=config.logdir,
+      batch_steps=config.batch_size * config.batch_length)
   embodied.run.train(agent, env, replay, logger, args)
 
 

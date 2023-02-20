@@ -7,8 +7,8 @@ import numpy as np
 
 
 class Prefetch:
-  """Implements zip() with multi-threaded prefetching. The sources are expected to
-  yield dicts of Numpy arrays and the iterator will return dicts of batched
+  """Implements zip() with multi-threaded prefetching. The sources are expected
+  to yield dicts of Numpy arrays and the iterator will return dicts of batched
   Numpy arrays."""
 
   def __init__(self, sources, workers=0, prefetch=4):

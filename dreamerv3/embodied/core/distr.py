@@ -21,7 +21,7 @@ class Client:
     self.socket.setsockopt(zmq.IDENTITY, uuid.uuid4().bytes)
     self.socket.RCVTIMEO = timeout_ms
     for address in addresses:
-      basics.print(f'Client connecting to {address}', color='green')
+      basics.print_(f'Client connecting to {address}', color='green')
       ipv6 and self.socket.setsockopt(zmq.IPV6, 1)
       self.socket.connect(address)
     self.result = True
@@ -31,7 +31,7 @@ class Client:
     if self.result is None:
       self._receive()
     self.result = None
-    self.socket.send(pack(data))
+    self.socket.send(basics.pack(data))
     return self._receive
 
   def _receive(self):
@@ -39,7 +39,7 @@ class Client:
       recieved = self.socket.recv()
     except Exception as e:
       raise RuntimeError(f'Failed to receive data from server: {e}')
-    self.result = unpack(recieved)
+    self.result = basics.unpack(recieved)
     if self.result.get('type', 'data') == 'error':
       msg = self.result.get('message', None)
       raise RuntimeError(f'Server responded with an error: {msg}')
@@ -52,7 +52,7 @@ class Server:
     import zmq
     context = zmq.Context.instance()
     self.socket = context.socket(zmq.REP)
-    basics.print(f'Server listening at {address}', color='green')
+    basics.print_(f'Server listening at {address}', color='green')
     ipv6 and self.socket.setsockopt(zmq.IPV6, 1)
     self.socket.bind(address)
     self.function = function
@@ -60,16 +60,16 @@ class Server:
   def run(self):
     while True:
       payload = self.socket.recv()
-      inputs = unpack(payload)
+      inputs = basics.unpack(payload)
       assert isinstance(inputs, dict), type(inputs)
       try:
         result = self.function(inputs)
         assert isinstance(result, dict), type(result)
       except Exception as e:
         result = {'type': 'error', 'message': str(e)}
-        self.socket.send(pack(payload))
+        self.socket.send(basics.pack(payload))
         raise
-      payload = pack(result)
+      payload = basics.pack(result)
       self.socket.send(payload)
 
 
@@ -79,7 +79,7 @@ class BatchServer:
     import zmq
     context = zmq.Context.instance()
     self.socket = context.socket(zmq.ROUTER)
-    basics.print(f'BatchServer listening at {address}', color='green')
+    basics.print_(f'BatchServer listening at {address}', color='green')
     ipv6 and self.socket.setsockopt(zmq.IPV6, 1)
     self.socket.bind(address)
     self.function = function
@@ -91,7 +91,7 @@ class BatchServer:
       addresses = []
       for i in range(self.batch):
         address, empty, payload = self.socket.recv_multipart()
-        data = unpack(payload)
+        data = basics.unpack(payload)
         assert isinstance(data, dict), type(data)
         if inputs is None:
           inputs = {
@@ -114,27 +114,10 @@ class BatchServer:
 
   def _respond(self, addresses, results):
     for i, address in enumerate(addresses):
-      payload = pack({
+      payload = basics.pack({
           k: v if isinstance(v, str) else v[i]
           for k, v in results.items()})
       self.socket.send_multipart([address, b'', payload])
-
-
-def pack(data):
-  import msgpack
-  return msgpack.packb({
-      k: v if isinstance(v, str) else (v.shape, v.dtype.name, v.tobytes())
-      for k, v in data.items()})
-
-
-def unpack(buffer):
-  import msgpack
-  tostr = lambda x: x.decode('utf-8') if isinstance(x, bytes) else x
-  return {
-      tostr(k): (
-          tostr(v) if isinstance(v, (str, bytes))
-          else np.frombuffer(v[2], tostr(v[1])).reshape(v[0]))
-      for k, v in msgpack.unpackb(buffer).items()}
 
 
 class Thread(threading.Thread):
@@ -218,11 +201,13 @@ class Process:
 def run(workers):
   [x.start() for x in workers]
   while True:
+    if all(x.exitcode == 0 for x in workers):
+      print('All workers terminated successfully.')
+      return
     for worker in workers:
       if worker.exitcode not in (None, 0):
         # Wait for everybody who wants to print their error messages.
         time.sleep(1)
         [x.terminate() for x in workers if x is not worker]
-        print(f'Stopped workers due to crash in {worker.name}.')
-        return
+        raise RuntimeError(f'Stopped workers due to crash in {worker.name}.')
     time.sleep(0.1)

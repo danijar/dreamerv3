@@ -227,7 +227,7 @@ def pmap(fun, axis_name=None, static=None, **kwargs):
     return fun(state, rng, *args, create=False, **dict(statics), **kw)
 
   @functools.wraps(fun)
-  def wrapper(state, rng, *args, **kw):
+  def wrapper(state, rng, *args, init_only=False, **kw):
     if any([name not in kw for name in static]):
       raise ValueError('Please pass all static arguments by keyword.')
     state = state.copy()
@@ -239,9 +239,12 @@ def pmap(fun, axis_name=None, static=None, **kwargs):
       for key, value in created.items():
         if key not in state:
           state[key] = value
-    selected = {k: v for k, v in state.items() if k in wrapper.keys}
-    out, updated = apply(statics, selected, rng, *args, **kw)
-    return out, {**state, **updated}
+    if init_only:
+      return state
+    else:
+      selected = {k: v for k, v in state.items() if k in wrapper.keys}
+      out, updated = apply(statics, selected, rng, *args, **kw)
+      return out, {**state, **updated}
   return wrapper
 
 

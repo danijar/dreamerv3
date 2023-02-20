@@ -28,7 +28,9 @@ def main(argv=None):
   for name in parsed.configs:
     config = config.update(agt.Agent.configs[name])
   config = embodied.Flags(config).parse(other)
-  args = config.run.update(batch_steps=config.batch_size * config.batch_length)
+  args = embodied.Config(
+      **config.run, logdir=config.logdir,
+      batch_steps=config.batch_size * config.batch_length)
   print(config)
 
   logdir = embodied.Path(args.logdir)
@@ -83,6 +85,18 @@ def main(argv=None):
       cleanup.append(env)
       agent = agt.Agent(env.obs_space, env.act_space, step, config)
       embodied.run.eval_only(agent, env, logger, args)
+
+    elif args.script == 'parallel':
+      assert config.run.actor_batch <= config.envs.amount, (
+          config.run.actor_batch, config.envs.amount)
+      step = embodied.Counter()
+      env = make_env(config)
+      agent = agt.Agent(env.obs_space, env.act_space, step, config)
+      env.close()
+      replay = make_replay(config, logdir / 'replay', rate_limit=True)
+      embodied.run.parallel(
+          agent, replay, logger, bind(make_env, config),
+          num_envs=config.envs.amount, args=args)
 
     else:
       raise NotImplementedError(args.script)

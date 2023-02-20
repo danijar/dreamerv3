@@ -6,6 +6,7 @@ class Agent:
     pass
 
   def dataset(self, generator_fn):
+    # TODO: Go from iterable to iterable instead.
     raise NotImplementedError(
         'dataset(generator_fn) -> iterable')
 
@@ -26,6 +27,11 @@ class Agent:
 
   def load(self, data):
     raise NotImplementedError('load(data) -> None')
+
+  def sync(self):
+    # This method allows the agent to sync parameters from its training devices
+    # to its policy devices in the case of a multi-device agent.
+    pass
 
 
 class Env:

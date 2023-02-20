@@ -14,6 +14,7 @@ from . import path
 class Logger:
 
   def __init__(self, step, outputs, multiplier=1):
+    assert outputs, 'Provide a list of logger outputs.'
     self.step = step
     self.outputs = outputs
     self.multiplier = multiplier
@@ -84,8 +85,9 @@ class AsyncOutput:
 
 class TerminalOutput:
 
-  def __init__(self, pattern=r'.*'):
+  def __init__(self, pattern=r'.*', name=None):
     self._pattern = re.compile(pattern)
+    self._name = name
     try:
       import rich.console
       self._console = rich.console.Console()
@@ -98,13 +100,19 @@ class TerminalOutput:
     scalars = {k: v for k, v in scalars.items() if self._pattern.search(k)}
     formatted = {k: self._format_value(v) for k, v in scalars.items()}
     if self._console:
-      self._console.rule(f'[green bold]Step {step}')
+      if self._name:
+        self._console.rule(f'[green bold]{self._name} (Step {step})')
+      else:
+        self._console.rule(f'[green bold]Step {step}')
       self._console.print(' [blue]/[/blue] '.join(
           f'{k} {v}' for k, v in formatted.items()))
       print('')
     else:
       message = ' / '.join(f'{k} {v}' for k, v in formatted.items())
-      print(f'[{step}]', message, flush=True)
+      message = f'[{step}] {message}'
+      if self._name:
+        message = f'[{self._name}] {message}'
+      print(message, flush=True)
 
   def _format_value(self, value):
     value = float(value)
@@ -166,12 +174,13 @@ class TensorBoardOutput(AsyncOutput):
     reset = False
     if self._maxsize:
       result = self._promise and self._promise.result()
+      # print('Current TensorBoard event file size:', result)
       reset = (self._promise and result >= self._maxsize)
       self._promise = self._checker.submit(self._check)
     if not self._writer or reset:
       print('Creating new TensorBoard event file writer.')
       self._writer = tf.summary.create_file_writer(
-          self._logdir, max_queue=1000)
+          self._logdir, flush_millis=1000, max_queue=10000)
     self._writer.set_as_default()
     for step, name, value in summaries:
       try:
@@ -219,20 +228,23 @@ class TensorBoardOutput(AsyncOutput):
 
 class WandBOutput:
 
-  def __init__(self, name, config=None):
+  def __init__(self, pattern, logdir, config):
+    self._pattern = re.compile(pattern)
     import wandb
     wandb.init(
-        name=name,
-        project='dreamerv3',
+        project="dreamerv3",
+        name=logdir.name,
+        # sync_tensorboard=True,,
         entity='word-bots',
-        config=config and dict(config),
+        config=dict(config),
     )
+    self._wandb = wandb
 
   def __call__(self, summaries):
-    import wandb
     bystep = collections.defaultdict(dict)
+    wandb = self._wandb
     for step, name, value in summaries:
-      if len(value.shape) == 0:
+      if len(value.shape) == 0 and self._pattern.search(name):
         bystep[step][name] = float(value)
       elif len(value.shape) == 1:
         bystep[step][name] = wandb.Histogram(value)
@@ -252,6 +264,7 @@ class WandBOutput:
         if np.issubdtype(value.dtype, np.floating):
           value = np.clip(255 * value, 0, 255).astype(np.uint8)
         bystep[step][name] = wandb.Video(value)
+
     for step, metrics in bystep.items():
       self._wandb.log(metrics, step=step)
 
@@ -265,6 +278,7 @@ class MLFlowOutput:
     self._setup(run_name, resume_id, config)
 
   def __call__(self, summaries):
+    timestamp = datetime.datetime.now().timestamp()
     bystep = collections.defaultdict(dict)
     for step, name, value in summaries:
       if len(value.shape) == 0 and self._pattern.search(name):
