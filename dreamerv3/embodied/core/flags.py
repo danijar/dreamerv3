@@ -52,7 +52,7 @@ class Flags:
       return
     if not key:
       vals = ', '.join(f"'{x}'" for x in vals)
-      raise ValueError(f"Values {vals} were not preceeded by any flag.")
+      raise ValueError(f"Values {vals} were not preceded by any flag.")
     name = key[len('--'):]
     if '=' in name:
       remaining.extend([key] + vals)
