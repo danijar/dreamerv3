@@ -290,8 +290,8 @@ def _prerun(fun, *args, **kwargs):
   if not context().create:
     return
   discarded, state = fun(dict(context()), rng(), *args, ignore=True, **kwargs)
-  jax.tree_util.tree_map(
-      lambda x: hasattr(x, 'delete') and x.delete(), discarded)
+  # jax.tree_util.tree_map(
+  #     lambda x: hasattr(x, 'delete') and x.delete(), discarded)
   context().update(state)
 
 
