@@ -79,7 +79,7 @@ Flexible training script:
 ```sh
 python dreamerv3/train.py \
   --logdir ~/logdir/$(date "+%Y%m%d-%H%M%S") \
-  --configs crafter --batch_size 16 --run.train_every 32
+  --configs crafter --batch_size 16 --run.train_ratio 32
 ```
 
 # Tips
