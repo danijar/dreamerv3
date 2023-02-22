@@ -56,7 +56,7 @@ ENV GCS_READ_REQUEST_TIMEOUT_SECS=300
 ENV GCS_WRITE_REQUEST_TIMEOUT_SECS=600
 
 # Embodied
-RUN pip3 install numpy cloudpickle ruamel.yaml rich
+RUN pip3 install numpy cloudpickle ruamel.yaml rich zmq msgpack
 COPY . /embodied
 RUN chown -R 1000:root /embodied && chmod -R 775 /embodied
 

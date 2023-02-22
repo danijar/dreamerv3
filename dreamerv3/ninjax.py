@@ -88,6 +88,8 @@ def pure(fun, nested=False):
     before = context
     try:
       name = fun.__name__
+      if rng.shape == ():
+        rng = jax.random.PRNGKey(rng)
       context = Context(state.copy(), rng, create, modify, ignore, [], name)
       CONTEXT[threading.get_ident()] = context
       out = fun(*args, **kwargs)

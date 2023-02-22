@@ -84,6 +84,7 @@ def learner(step, agent, replay, logger, timer, args):
   should_log = embodied.when.Clock(args.log_every)
   should_save = embodied.when.Clock(args.save_every)
   should_sync = embodied.when.Every(args.sync_every)
+  updates = embodied.Counter()
 
   checkpoint = embodied.Checkpoint(logdir / 'checkpoint.ckpt')
   checkpoint.step = step
@@ -93,16 +94,17 @@ def learner(step, agent, replay, logger, timer, args):
     checkpoint.load(args.from_checkpoint)
   checkpoint.load_or_save()
 
-  dataset = iter(agent.dataset(replay.dataset))
+  dataset = agent.dataset(replay.dataset)
   state = None
   stats = dict(last_time=time.time(), last_step=int(step), batch_entries=0)
   while True:
     batch = next(dataset)
     outs, state, mets = agent.train(batch, state)
     metrics.add(mets)
+    updates.increment()
     stats['batch_entries'] += batch['is_first'].size
 
-    if should_sync(step):
+    if should_sync(updates):
       agent.sync()
 
     if should_log():

@@ -7,11 +7,21 @@ defaults:
   replay: uniform
   replay_size: 1e6
   replay_online: False
-  jax: {platform: gpu, jit: True, precision: float16, prealloc: True, debug_nans: False, logical_cpus: 0, debug: False, policy_devices: [0], train_devices: [0]}
   eval_dir: ''
   filter: '.*'
 
-  # Loop
+  jax:
+    platform: gpu
+    jit: True
+    precision: float16
+    prealloc: True
+    debug_nans: False
+    logical_cpus: 0
+    debug: False
+    policy_devices: [0]
+    train_devices: [0]
+    metrics_every: 10
+
   run:
     script: train
     steps: 1e10
@@ -31,12 +41,11 @@ defaults:
     log_keys_mean: '(log_entropy)'
     log_keys_max: '^$'
     from_checkpoint: ''
-    sync_every: 200
+    sync_every: 10
     # actor_addr: 'tcp://127.0.0.1:5551'
     actor_addr: 'ipc:///tmp/5551'
     actor_batch: 32
 
-  # Envs
   envs: {amount: 4, parallel: process, length: 0, reset: True, restart: True, discretize: 0, checks: False}
   wrapper: {length: 0, reset: True, discretize: 0, checks: False}
   env:

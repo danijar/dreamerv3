@@ -6,9 +6,8 @@ class Agent:
     pass
 
   def dataset(self, generator_fn):
-    # TODO: Go from iterable to iterable instead.
     raise NotImplementedError(
-        'dataset(generator_fn) -> iterable')
+        'dataset(generator_fn) -> generator_fn')
 
   def policy(self, obs, state=None, mode='train'):
     raise NotImplementedError(

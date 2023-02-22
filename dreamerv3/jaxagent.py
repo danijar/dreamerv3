@@ -25,9 +25,12 @@ class JAXAgent(embodied.Agent):
 
   def __init__(self, agent_cls, obs_space, act_space, step, config):
     self.config = config.jax
+    self.batch_size = config.batch_size
+    self.batch_length = config.batch_length
+    self.data_loaders = config.data_loaders
     self._setup()
     self.agent = agent_cls(obs_space, act_space, step, config, name='agent')
-    self.rng = jaxutils.RNG(config.seed)
+    self.rng = np.random.default_rng(config.seed)
 
     available = jax.devices(self.config.platform)
     self.policy_devices = [available[i] for i in self.config.policy_devices]
@@ -39,8 +42,10 @@ class JAXAgent(embodied.Agent):
     print('Train devices: ', ', '.join([str(x) for x in self.train_devices]))
 
     self._once = True
+    self._updates = embodied.Counter()
+    self._should_metrics = embodied.when.Every(self.config.metrics_every)
     self._transform()
-    self.varibs = self._init_varibs(config, obs_space, act_space)
+    self.varibs = self._init_varibs(obs_space, act_space)
     self.sync()
 
   def policy(self, obs, state=None, mode='train'):
@@ -52,7 +57,7 @@ class JAXAgent(embodied.Agent):
       state, _ = self._init_policy(varibs, rng, obs['is_first'])
     else:
       state = tree_map(
-          jnp.asarray, state, is_leaf=lambda x: isinstance(x, list))
+          np.asarray, state, is_leaf=lambda x: isinstance(x, list))
       state = self._convert_inps(state, self.policy_devices)
     (outs, state), _ = self._policy(varibs, rng, obs, state, mode=mode)
     outs = self._convert_outs(outs, self.policy_devices)
@@ -61,14 +66,17 @@ class JAXAgent(embodied.Agent):
     return outs, state
 
   def train(self, data, state=None):
-    data = self._convert_inps(data, self.train_devices)
     rng = self._next_rngs(self.train_devices)
     if state is None:
       state, self.varibs = self._init_train(self.varibs, rng, data['is_first'])
     (outs, state, mets), self.varibs = self._train(
         self.varibs, rng, data, state)
     outs = self._convert_outs(outs, self.train_devices)
-    mets = self._convert_mets(mets, self.train_devices)
+    self._updates.increment()
+    if self._should_metrics(self._updates):
+      mets = self._convert_mets(mets, self.train_devices)
+    else:
+      mets = {}
     if self._once:
       self._once = False
       assert jaxutils.Optimizer.PARAM_COUNTS
@@ -77,14 +85,18 @@ class JAXAgent(embodied.Agent):
     return outs, state, mets
 
   def report(self, data):
-    data = self._convert_inps(data, self.train_devices)
     rng = self._next_rngs(self.train_devices)
     mets, _ = self._report(self.varibs, rng, data)
     mets = self._convert_mets(mets, self.train_devices)
     return mets
 
   def dataset(self, generator):
-    return self.agent.dataset(generator)
+    batcher = embodied.Batcher(
+        sources=[generator] * self.batch_size,
+        workers=self.data_loaders,
+        postprocess=lambda x: self._convert_inps(x, self.train_devices),
+        prefetch_source=4, prefetch_batch=1)
+    return batcher()
 
   def save(self):
     if len(self.train_devices) > 1:
@@ -92,16 +104,14 @@ class JAXAgent(embodied.Agent):
     else:
       varibs = self.varibs
     varibs = jax.device_get(varibs)
-    data = tree_flatten(tree_map(jnp.asarray, varibs))[0]
-    data = [np.asarray(x) for x in data]
+    data = tree_map(np.asarray, varibs)
     return data
 
   def load(self, state):
-    varibs = tree_flatten(self.varibs)[1].unflatten(state)
     if len(self.train_devices) == 1:
-      self.varibs = jax.device_put(varibs, self.train_devices[0])
+      self.varibs = jax.device_put(state, self.train_devices[0])
     else:
-      self.varibs = jax.device_put_replicated(varibs, self.train_devices)
+      self.varibs = jax.device_put_replicated(state, self.train_devices)
     self.sync()
 
   def sync(self):
@@ -110,7 +120,7 @@ class JAXAgent(embodied.Agent):
     if len(self.train_devices) == 1:
       varibs = self.varibs
     else:
-      varibs = tree_map(lambda x: x[0], self.varibs)
+      varibs = tree_map(lambda x: x[0].device_buffer, self.varibs)
     if len(self.policy_devices) == 1:
       self.policy_varibs = jax.device_put(varibs, self.policy_devices[0])
     else:
@@ -136,6 +146,7 @@ class JAXAgent(embodied.Agent):
     jax.config.update('jax_platform_name', self.config.platform)
     jax.config.update('jax_disable_jit', not self.config.jit)
     jax.config.update('jax_debug_nans', self.config.debug_nans)
+    jax.config.update('jax_transfer_guard', 'disallow')
     if self.config.platform == 'cpu':
       jax.config.update('jax_disable_most_optimizations', self.config.debug)
     jaxutils.COMPUTE_DTYPE = getattr(jnp, self.config.precision)
@@ -166,14 +177,21 @@ class JAXAgent(embodied.Agent):
       self._policy = nj.pmap(self._policy, 'i', static=['mode'], **kw)
 
   def _convert_inps(self, value, devices):
-    if len(devices) > 1:
+    if len(devices) == 1:
+      value = jax.device_put(value, devices[0])
+    else:
       check = tree_map(lambda x: len(x) % len(devices) == 0, value)
       if not all(jax.tree_util.tree_leaves(check)):
         shapes = tree_map(lambda x: x.shape, value)
         raise ValueError(
             f'Batch must by divisible by {len(devices)} devices: {shapes}')
+      # TODO: Avoid the reshape?
       value = tree_map(
           lambda x: x.reshape((len(devices), -1) + x.shape[1:]), value)
+      shards = []
+      for i in range(len(devices)):
+        shards.append(tree_map(lambda x: x[i], value))
+      value = jax.device_put_sharded(shards, devices)
     return value
 
   def _convert_outs(self, value, devices):
@@ -190,18 +208,20 @@ class JAXAgent(embodied.Agent):
       value = tree_map(lambda x: x[0], value)
     return value
 
-  def _next_rngs(self, devices, mirror=False):
+  def _next_rngs(self, devices, mirror=False, high=2 ** 63 - 1):
     if len(devices) == 1:
-      return self.rng.next()
+      return jax.device_put(self.rng.integers(high), devices[0])
     elif mirror:
-      return jnp.repeat(self.rng.next()[None], len(devices), axis=0)
+      return jax.device_put_replicated(
+          self.rng.integers(high), devices)
     else:
-      return jnp.stack(self.rng.next(len(devices)))
+      return jax.device_put_sharded(
+          list(self.rng.integers(high, size=len(devices))), devices)
 
-  def _init_varibs(self, config, obs_space, act_space):
+  def _init_varibs(self, obs_space, act_space):
     varibs = {}
     rng = self._next_rngs(self.train_devices, mirror=True)
-    dims = (config.batch_size, config.batch_length)
+    dims = (self.batch_size, self.batch_length)
     data = self._dummy_batch({**obs_space, **act_space}, dims)
     data = self._convert_inps(data, self.train_devices)
     state, varibs = self._init_train(varibs, rng, data['is_first'])

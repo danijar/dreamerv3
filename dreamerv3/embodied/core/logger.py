@@ -278,7 +278,6 @@ class MLFlowOutput:
     self._setup(run_name, resume_id, config)
 
   def __call__(self, summaries):
-    timestamp = datetime.datetime.now().timestamp()
     bystep = collections.defaultdict(dict)
     for step, name, value in summaries:
       if len(value.shape) == 0 and self._pattern.search(name):

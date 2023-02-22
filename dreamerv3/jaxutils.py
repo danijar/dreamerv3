@@ -14,26 +14,6 @@ sg = lambda x: tree_map(jax.lax.stop_gradient, x)
 COMPUTE_DTYPE = jnp.float32
 
 
-class RNG:
-
-  def __init__(self, seed=0, reserve=128):
-    self.rng = jax.random.PRNGKey(seed)
-    self.reserve = reserve
-    self.buffer = []
-
-  def next(self, amount=None):
-    if len(self.buffer) < (amount or 1):
-      keys = jax.random.split(self.rng, max((amount or 1) + 1, self.reserve))
-      self.rng = keys[0]
-      self.buffer = list(keys[1:])
-    if amount:
-      keys = self.buffer[:amount]
-      self.buffer = self.buffer[:amount]
-      return keys
-    else:
-      return self.buffer.pop(0)
-
-
 def cast_to_compute(values):
   return tree_map(lambda x: x.astype(COMPUTE_DTYPE), values)
 

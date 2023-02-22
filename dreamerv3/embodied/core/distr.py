@@ -1,5 +1,4 @@
 import ctypes
-import multiprocessing
 import sys
 import threading
 import time
@@ -161,12 +160,17 @@ class Thread(threading.Thread):
 class Process:
 
   lock = None
+  initializers = []
 
   def __init__(self, fn, *args, name=None):
+    import multiprocessing
+    import cloudpickle
     mp = multiprocessing.get_context('spawn')
     if Process.lock is None:
       Process.lock = mp.Lock()
     name = name or fn.__name__
+    initializers = cloudpickle.dumps(self.initializers)
+    args = (initializers,) + args
     self._process = mp.Process(
         target=self._wrapper, args=(Process.lock, fn, *args),
         name=name)
@@ -188,6 +192,10 @@ class Process:
 
   def _wrapper(self, lock, fn, *args):
     try:
+      import cloudpickle
+      initializers, *args = args
+      for initializer in cloudpickle.loads(initializers):
+        initializer()
       fn(*args)
     except Exception:
       with lock:

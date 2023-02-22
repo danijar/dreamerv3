@@ -15,7 +15,7 @@ from .logger import Logger
 from .parallel import Parallel
 from .timer import Timer
 from .worker import Worker
-from .prefetch import Prefetch
+from .batcher import Batcher
 from .metrics import Metrics
 from .uuid import uuid
 

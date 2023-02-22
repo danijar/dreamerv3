@@ -17,6 +17,7 @@ def train_eval(
   should_eval = embodied.when.Every(args.eval_every, args.eval_initial)
   should_sync = embodied.when.Every(args.sync_every)
   step = logger.step
+  updates = embodied.Counter()
   metrics = embodied.Metrics()
   print('Observation space:', embodied.format(train_env.obs_space), sep='\n')
   print('Action space:', embodied.format(train_env.act_space), sep='\n')
@@ -70,8 +71,8 @@ def train_eval(
   logger.add(metrics.result())
   logger.write()
 
-  dataset_train = iter(agent.dataset(train_replay.dataset))
-  dataset_eval = iter(agent.dataset(eval_replay.dataset))
+  dataset_train = agent.dataset(train_replay.dataset)
+  dataset_eval = agent.dataset(eval_replay.dataset)
   state = [None]  # To be writable from train step function below.
   batch = [None]
   def train_step(tran, worker):
@@ -82,7 +83,8 @@ def train_eval(
       metrics.add(mets, prefix='train')
       if 'priority' in outs:
         train_replay.prioritize(outs['key'], outs['priority'])
-    if should_sync(step):
+      updates.inc()
+    if should_sync(updates):
       agent.sync()
     if should_log(step):
       logger.add(metrics.result())

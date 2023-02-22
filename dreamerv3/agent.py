@@ -101,11 +101,6 @@ class Agent(nj.Module):
       report.update({f'expl_{k}': v for k, v in mets.items()})
     return report
 
-  def dataset(self, generator):
-    return embodied.Prefetch(
-        sources=[generator] * self.config.batch_size,
-        workers=self.config.data_loaders, prefetch=4)
-
   def preprocess(self, obs):
     obs = obs.copy()
     for key, value in obs.items():
