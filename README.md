@@ -116,6 +116,10 @@ python dreamerv3/train.py \
 - To continue stopped training runs, simply run the same command line again and
   make sure that the `--logdir` points to the same directory.
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=danijar/dreamerv3&type=Date)](https://star-history.com/#danijar/dreamerv3&Date)
+
 # Disclaimer
 
 This repository contains a reimplementation of DreamerV3 based on the open
