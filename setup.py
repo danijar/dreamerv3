@@ -7,6 +7,7 @@ setuptools.setup(
     name='dreamerv3',
     version='1.5.0',
     description='Mastering Diverse Domains through World Models',
+    author='Danijar Hafner',
     url='http://github.com/danijar/dreamerv3',
     long_description=pathlib.Path('README.md').read_text(),
     long_description_content_type='text/markdown',
