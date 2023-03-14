@@ -83,7 +83,7 @@ def train_eval(
       metrics.add(mets, prefix='train')
       if 'priority' in outs:
         train_replay.prioritize(outs['key'], outs['priority'])
-      updates.inc()
+      updates.increment()
     if should_sync(updates):
       agent.sync()
     if should_log(step):
