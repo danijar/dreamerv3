@@ -78,7 +78,7 @@ class RSSM(nj.Module):
     else:
       mean = state['mean'].astype(f32)
       std = state['std'].astype(f32)
-      return tfp.MultivariateNormalDiag(mean, std)
+      return tfd.MultivariateNormalDiag(mean, std)
 
   def obs_step(self, prev_state, prev_action, embed, is_first):
     is_first = cast(is_first)
