@@ -30,7 +30,7 @@ RUN pip3 install --upgrade pip
 # Envs
 ENV MUJOCO_GL egl
 ENV DMLAB_DATASET_PATH /dmlab_data
-COPY scripts scripts
+COPY dreamerv3/embodied/scripts scripts
 RUN sh scripts/install-dmlab.sh
 RUN sh scripts/install-atari.sh
 RUN sh scripts/install-minecraft.sh
