@@ -7,7 +7,7 @@
 # 2. Start training:
 # docker build -f  dreamerv3/Dockerfile -t img . && \
 # docker run -it --rm --gpus all -v ~/logdir:/logdir img \
-#   sh scripts/xvfb_run.sh python3 dreamerv3/train.py \
+#   sh /scripts/xvfb_run.sh python3 dreamerv3/train.py \
 #   --logdir "/logdir/$(date +%Y%m%d-%H%M%S)" \
 #   --configs dmc_vision --task dmc_walker_walk
 #
