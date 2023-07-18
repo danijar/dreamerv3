@@ -15,7 +15,7 @@
 # tensorboard --logdir ~/logdir
 
 # System
-FROM nvidia/cuda:11.4.2-cudnn8-devel-ubuntu20.04
+FROM nvidia/cuda:11.4.3-cudnn8-devel-ubuntu20.04
 ARG DEBIAN_FRONTEND=noninteractive
 ENV TZ=America/San_Francisco
 ENV PYTHONUNBUFFERED 1
