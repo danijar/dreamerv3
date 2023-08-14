@@ -307,7 +307,7 @@ class MLFlowOutput:
 def _encode_gif(frames, fps):
   from subprocess import Popen, PIPE
   h, w, c = frames[0].shape
-  pxfmt = {1: 'gray', 3: 'rgb24'}[c]
+  pxfmt = {1: 'gray', 3: 'rgb24', 4: 'rgba'}[c]
   cmd = ' '.join([
       'ffmpeg -y -f rawvideo -vcodec rawvideo',
       f'-r {fps:.02f} -s {w}x{h} -pix_fmt {pxfmt} -i - -filter_complex',
