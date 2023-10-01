@@ -74,3 +74,9 @@ COPY . /embodied
 RUN chown -R 1000:root /embodied && chmod -R 775 /embodied
 
 WORKDIR embodied
+
+# Make sure the directory exists
+RUN mkdir -p /root/dreamerv3/
+
+# Create the symbolic link
+RUN ln -s /embodied/dreamerv3/configs.yaml /root/dreamerv3/configs.yaml

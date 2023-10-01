@@ -9,16 +9,12 @@ def main():
   config = embodied.Config(dreamerv3.configs['defaults'])
   config = config.update(dreamerv3.configs['medium'])
   config = config.update({
-      'logdir': '~/logdir/run1',
-      'run.train_ratio': 64,
+      'logdir': '~/logdir/kuramoto5',
       'run.log_every': 30,  # Seconds
-      'batch_size': 16,
-      'jax.prealloc': False,
-      'encoder.mlp_keys': '$^',
-      'decoder.mlp_keys': '$^',
-      'encoder.cnn_keys': 'image',
-      'decoder.cnn_keys': 'image',
-      # 'jax.platform': 'cpu',
+      'encoder.mlp_keys': '^$',
+      'decoder.mlp_keys': '^$',
+      'encoder.cnn_keys': 'correlogram',
+      'decoder.cnn_keys': 'correlogram',
   })
   config = embodied.Flags(config).parse()
 
@@ -28,14 +24,16 @@ def main():
       embodied.logger.TerminalOutput(),
       embodied.logger.JSONLOutput(logdir, 'metrics.jsonl'),
       embodied.logger.TensorBoardOutput(logdir),
-      # embodied.logger.WandBOutput(logdir.name, config),
-      # embodied.logger.MLFlowOutput(logdir.name),
   ])
 
-  import crafter
+  from embodied.envs import kuramoto
   from embodied.envs import from_gym
-  env = crafter.Env()  # Replace this with your Gym env.
-  env = from_gym.FromGym(env, obs_key='image')  # Or obs_key='vector'.
+  import numpy as np
+  target_matrix = np.random.rand(64,64)
+  target_matrix = (target_matrix + target_matrix.T) / 2 # Ensure symmetry
+  np.fill_diagonal(target_matrix, 0) # No self-coupling
+  env = kuramoto.KuramotoEnv(target_matrix)  # Replace this with your Gym env.
+  env = from_gym.FromGym(env, obs_key='correlogram') 
   env = dreamerv3.wrap_env(env, config)
   env = embodied.BatchEnv([env], parallel=False)
 
@@ -49,4 +47,4 @@ def main():
   # embodied.run.eval_only(agent, env, logger, args)
 
 if __name__ == '__main__':
-  main()
+    main()

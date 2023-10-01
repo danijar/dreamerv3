@@ -15,7 +15,6 @@ def main():
   )
   graphworld_parser.add_argument("--N_ROOMS", type=int, required=True, help="Number of rooms")
   graphworld_parser.add_argument("--SEED", type=int, required=True, help="Seed for random number generator")
-  graphworld_parser.add_argument("--N_STEPS", type=int, required=True, help="Number of steps")
   
   graphworld_args, unknown_args = graphworld_parser.parse_known_args()
 
@@ -23,7 +22,7 @@ def main():
   config = embodied.Config(dreamerv3.configs['defaults'])
   config = config.update(dreamerv3.configs['small'])
   config = config.update({
-      'logdir': f'~/logdir/run_{graphworld_args.N_ROOMS}_{graphworld_args.SEED}_{graphworld_args.N_STEPS}',
+      'logdir': f'~/logdir/run_{graphworld_args.N_ROOMS}_{graphworld_args.SEED}',
       'run.log_every': 30,  # Seconds
       'run.steps': 1e7,
       'encoder.mlp_keys': 'vector',

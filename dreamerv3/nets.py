@@ -193,25 +193,36 @@ class MultiEncoder(nj.Module):
       self, shapes, cnn_keys=r'.*', mlp_keys=r'.*', mlp_layers=4,
       mlp_units=512, cnn='resize', cnn_depth=48,
       cnn_blocks=2, resize='stride',
-      symlog_inputs=False, minres=4, **kw):
-    excluded = ('is_first', 'is_last')
-    shapes = {k: v for k, v in shapes.items() if (
-        k not in excluded and not k.startswith('log_'))}
-    self.cnn_shapes = {k: v for k, v in shapes.items() if (
-        len(v) == 3 and re.match(cnn_keys, k))}
-    self.mlp_shapes = {k: v for k, v in shapes.items() if (
-        len(v) in (1, 2) and re.match(mlp_keys, k))}
-    self.shapes = {**self.cnn_shapes, **self.mlp_shapes}
-    print('Encoder CNN shapes:', self.cnn_shapes)
-    print('Encoder MLP shapes:', self.mlp_shapes)
-    cnn_kw = {**kw, 'minres': minres, 'name': 'cnn'}
-    mlp_kw = {**kw, 'symlog_inputs': symlog_inputs, 'name': 'mlp'}
-    if cnn == 'resnet':
-      self._cnn = ImageEncoderResnet(cnn_depth, cnn_blocks, resize, **cnn_kw)
-    else:
-      raise NotImplementedError(cnn)
-    if self.mlp_shapes:
-      self._mlp = MLP(None, mlp_layers, mlp_units, dist='none', **mlp_kw)
+      symlog_inputs=False, minres=4, **kw
+  ):
+      excluded = ('is_first', 'is_last')
+      shapes = {k: v for k, v in shapes.items() if (
+          k not in excluded and not k.startswith('log_'))}
+      self.cnn_shapes = {k: v for k, v in shapes.items() if (
+          len(v) == 3 and re.match(cnn_keys, k))}
+      self.mlp_shapes = {k: v for k, v in shapes.items() if (
+          len(v) in (1, 2) and re.match(mlp_keys, k))}
+      self.shapes = {**self.cnn_shapes, **self.mlp_shapes}
+      print('Encoder CNN shapes:', self.cnn_shapes)
+      print('Encoder MLP shapes:', self.mlp_shapes)
+
+      # Check for input shapes
+      if not self.cnn_shapes and not self.mlp_shapes:
+          raise ValueError(
+              "No valid input shapes found. For CNN processing, input shapes should be 3D (height, width, channels). "
+              "For MLP processing, input shapes should be 1D or 2D. "
+              "Please check the 'shapes' argument and the 'cnn_keys' and 'mlp_keys' regex patterns."
+          )
+
+      cnn_kw = {**kw, 'minres': minres, 'name': 'cnn'}
+      mlp_kw = {**kw, 'symlog_inputs': symlog_inputs, 'name': 'mlp'}
+      if cnn == 'resnet':
+          self._cnn = ImageEncoderResnet(cnn_depth, cnn_blocks, resize, **cnn_kw)
+      else:
+          raise NotImplementedError(cnn)
+      if self.mlp_shapes:
+          self._mlp = MLP(None, mlp_layers, mlp_units, dist='none', **mlp_kw)
+
 
   def __call__(self, data):
     some_key, some_shape = list(self.shapes.items())[0]
