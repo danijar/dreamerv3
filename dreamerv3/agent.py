@@ -250,7 +250,8 @@ class ImagActorCritic(nj.Module):
     self.grad = config.actor_grad_disc if disc else config.actor_grad_cont
     self.actor = nets.MLP(
         name='actor', dims='deter', shape=act_space.shape, **config.actor,
-        dist=config.actor_dist_disc if disc else config.actor_dist_cont)
+        dist_cont=config.actor_dist_cont, dist_disc=config.actor_dist_disc)
+        # dist=config.actor_dist_disc if disc else config.actor_dist_cont)
     self.retnorms = {
         k: jaxutils.Moments(**config.retnorm, name=f'retnorm_{k}')
         for k in critics}

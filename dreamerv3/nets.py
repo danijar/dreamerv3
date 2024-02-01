@@ -415,9 +415,12 @@ class MLP(nj.Module):
     self._inputs = Input(inputs, dims=dims)
     self._symlog_inputs = symlog_inputs
     distkeys = (
-        'dist', 'outscale', 'minstd', 'maxstd', 'outnorm', 'unimix', 'bins')
+        'dist', 'outscale', 'minstd', 'maxstd', 'outnorm', 'unimix', 'bins',
+        "dist_cont", "dist_disc")
     self._dense = {k: v for k, v in kw.items() if k not in distkeys}
     self._dist = {k: v for k, v in kw.items() if k in distkeys}
+    self._dist_dict = {"Box": "dist_cont", "Discrete": "dist_disc"}
+    self._dist_disc = kw.get("dist_disc", "mse")
 
   def __call__(self, inputs):
     feat = self._inputs(inputs)
@@ -438,7 +441,7 @@ class MLP(nj.Module):
       raise ValueError(self._shape)
 
   def _out(self, name, shape, x):
-    return self.get(f'dist_{name}', Dist, shape, **self._dist)(x)
+    return self.get(f'dist_{name}', Dist, shape, dist=self._dist[name])(x)
 
 
 class Dist(nj.Module):
