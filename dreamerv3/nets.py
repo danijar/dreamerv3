@@ -104,11 +104,18 @@ class RSSM(nj.Module):
     prev_stoch = prev_state['stoch']
     prev_action = cast(prev_action)
     if self._action_clip > 0.0:
-      prev_action *= sg(self._action_clip / jnp.maximum(
+      if type(prev_action) == dict:
+        prev_action = jax.tree_util.tree_map(
+            lambda x: x*sg(self._action_clip / jnp.maximum(
+                self._action_clip, jnp.abs(x))), prev_action)
+      else:
+        prev_action *= sg(self._action_clip / jnp.maximum(
           self._action_clip, jnp.abs(prev_action)))
     if self._classes:
       shape = prev_stoch.shape[:-2] + (self._stoch * self._classes,)
       prev_stoch = prev_stoch.reshape(shape)
+    if type(prev_action) == dict:
+      prev_action = jnp.concatenate([v for k, v in prev_action.items()], -1)
     if len(prev_action.shape) > len(prev_stoch.shape):  # 2D actions.
       shape = prev_action.shape[:-2] + (np.prod(prev_action.shape[-2:]),)
       prev_action = prev_action.reshape(shape)
@@ -419,8 +426,10 @@ class MLP(nj.Module):
         "dist_cont", "dist_disc")
     self._dense = {k: v for k, v in kw.items() if k not in distkeys}
     self._dist = {k: v for k, v in kw.items() if k in distkeys}
-    self._dist_dict = {"Box": "dist_cont", "Discrete": "dist_disc"}
-    self._dist_disc = kw.get("dist_disc", "mse")
+    from collections import defaultdict
+    self._dist_dict = defaultdict(lambda: self._dist["dist"])
+    if 'dist_cont' in kw and "dist_disc" in kw:
+      self._dist_dict.update({"Continous": kw["dist_cont"], "Discrete": kw["dist_disc"]})
 
   def __call__(self, inputs):
     feat = self._inputs(inputs)
@@ -441,7 +450,7 @@ class MLP(nj.Module):
       raise ValueError(self._shape)
 
   def _out(self, name, shape, x):
-    return self.get(f'dist_{name}', Dist, shape, dist=self._dist[name])(x)
+    return self.get(f'dist_{name}', Dist, shape, dist=self._dist_dict[name])(x)  # , **self._dist
 
 
 class Dist(nj.Module):

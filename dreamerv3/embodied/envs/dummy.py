@@ -5,7 +5,7 @@ import numpy as np
 class Dummy(embodied.Env):
 
   def __init__(self, task, size=(64, 64), length=100):
-    assert task in ('cont', 'disc')
+    assert task in ('cont', 'Discrete')
     self._task = task
     self._size = size
     self._length = length

@@ -28,7 +28,10 @@ class Agent(nj.Module):
   def __init__(self, obs_space, act_space, step, config):
     self.config = config
     self.obs_space = obs_space
-    self.act_space = act_space['action']
+    try:
+      self.act_space = act_space['action']
+    except KeyError:
+      self.act_space = act_space
     self.step = step
     self.wm = WorldModel(obs_space, act_space, config, name='wm')
     self.task_behavior = getattr(behaviors, config.task_behavior)(
@@ -119,7 +122,10 @@ class WorldModel(nj.Module):
 
   def __init__(self, obs_space, act_space, config):
     self.obs_space = obs_space
-    self.act_space = act_space['action']
+    try:
+      self.act_space_shape = act_space['action'].shape
+    except KeyError:
+      self.act_space_shape = tuple(a+b for a, b in zip(act_space['Continous'].shape, act_space['Discrete'].shape))
     self.config = config
     shapes = {k: tuple(v.shape) for k, v in obs_space.items()}
     shapes = {k: v for k, v in shapes.items() if not k.startswith('log_')}
@@ -138,7 +144,7 @@ class WorldModel(nj.Module):
 
   def initial(self, batch_size):
     prev_latent = self.rssm.initial(batch_size)
-    prev_action = jnp.zeros((batch_size, *self.act_space.shape))
+    prev_action = jnp.zeros((batch_size, *self.act_space_shape))
     return prev_latent, prev_action
 
   def train(self, data, state):
@@ -151,6 +157,12 @@ class WorldModel(nj.Module):
   def loss(self, data, state):
     embed = self.encoder(data)
     prev_latent, prev_action = state
+    if 'action' not in data:
+      if len(data['Continous'].shape) == 2:
+        data['Continous'] = data['Continous'][..., None]
+      if len(data['Discrete'].shape) == 2:
+        data['Discrete'] = data['Discrete'][..., None]
+      data['action'] = jnp.concatenate([data['Discrete'], data['Continous']], -1)
     prev_actions = jnp.concatenate([
         prev_action[:, None], data['action'][:, :-1]], 1)
     post, prior = self.rssm.observe(
@@ -189,6 +201,7 @@ class WorldModel(nj.Module):
       return {**state, 'action': policy(state)}
     traj = jaxutils.scan(
         step, jnp.arange(horizon), start, self.config.imag_unroll)
+    traj = 
     traj = {
         k: jnp.concatenate([start[k][None], v], 0) for k, v in traj.items()}
     cont = self.heads['cont'](traj).mode()
@@ -246,12 +259,22 @@ class ImagActorCritic(nj.Module):
     self.scales = scales
     self.act_space = act_space
     self.config = config
-    disc = act_space.discrete
-    self.grad = config.actor_grad_disc if disc else config.actor_grad_cont
+    if type(self.act_space) == dict:
+      shape = {k: v.shape for k, v in act_space.items() if k != 'reset'} 
+      Discrete = False
+      self.grad_disc = config.actor_grad_disc
+      self.grad_cont = config.actor_grad_cont
+      self.grad = False
+    else:
+      shape = act_space.shape
+      Discrete = act_space.discrete
+      self.grad = config.actor_grad_disc if Discrete else config.actor_grad_cont
+      
     self.actor = nets.MLP(
-        name='actor', dims='deter', shape=act_space.shape, **config.actor,
-        dist_cont=config.actor_dist_cont, dist_disc=config.actor_dist_disc)
-        # dist=config.actor_dist_disc if disc else config.actor_dist_cont)
+        name='actor', dims='deter', shape=shape, **config.actor,
+        dist=config.actor_dist_disc if Discrete else config.actor_dist_cont,
+        dist_cont=config.actor_dist_cont if not Discrete else None,
+        dist_disc=config.actor_dist_disc if not Discrete else None)
     self.retnorms = {
         k: jaxutils.Moments(**config.retnorm, name=f'retnorm_{k}')
         for k in critics}
@@ -265,7 +288,10 @@ class ImagActorCritic(nj.Module):
 
   def train(self, imagine, start, context):
     def loss(start):
-      policy = lambda s: self.actor(sg(s)).sample(seed=nj.rng())
+      if type(self.act_space) == dict:
+        policy = lambda s: {k: w.sample(seed=nj.rng()) for k, w in self.actor(s).items()}
+      else:         
+        policy = lambda s: self.actor(sg(s)).sample(seed=nj.rng())
       traj = imagine(policy, start, self.config.imag_horizon)
       loss, metrics = self.loss(traj)
       return loss, (traj, metrics)
@@ -293,7 +319,11 @@ class ImagActorCritic(nj.Module):
     adv = jnp.stack(advs).sum(0)
     policy = self.actor(sg(traj))
     logpi = policy.log_prob(sg(traj['action']))[:-1]
-    loss = {'backprop': -adv, 'reinforce': -logpi * sg(adv)}[self.grad]
+    loss = {'backprop': -adv, 'reinforce': -logpi * sg(adv)}
+    if self.grad:
+      loss = loss[self.grad]
+    else:
+      loss = sum(loss.values())
     ent = policy.entropy()[:-1]
     loss -= self.config.actent * ent
     loss *= sg(traj['weight'])[:-1]
