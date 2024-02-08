@@ -225,6 +225,10 @@ class JAXAgent(embodied.Agent):
     data = self._dummy_batch({**obs_space, **act_space}, dims)
     data = self._convert_inps(data, self.train_devices)
     state, varibs = self._init_train(varibs, rng, data['is_first'])
+    # if "action" not in data:
+    #   data["action"] = {"Continous": data["Continous"], "Discrete": data["Discrete"]}
+    #   data.pop("Continous")
+    #   data.pop("Discrete")
     varibs = self._train(varibs, rng, data, state, init_only=True)
     # obs = self._dummy_batch(obs_space, (1,))
     # state, varibs = self._init_policy(varibs, rng, obs['is_first'])

@@ -62,10 +62,20 @@ class ClipAction(base.Wrapper):
     self._key = key
     self._low = low
     self._high = high
+    print(key, low, high, self.env.act_space[key].low, self.env.act_space[key].high)
 
   def step(self, action):
-    clipped = np.clip(action[self._key], self._low, self._high)
-    return self.env.step({**action, self._key: clipped})
+    # Ugly ass way if action has multiple distributions
+    if "action" in action and isinstance(action["action"], dict):
+      clipped = np.clip(action["action"][self._key], self._low, self._high)
+      unpacked_action = {**action["action"], 
+                         **{k: v for k, v in action.items() if k != "action"},
+                         self._key: clipped}
+      return self.env.step(unpacked_action)
+      # return self.env.step({**action, "action": {**action["action"], self._key: clipped}})
+    else:
+      clipped = np.clip(action[self._key], self._low, self._high)
+      return self.env.step({**action, self._key: clipped})
 
 
 class NormalizeAction(base.Wrapper):
@@ -111,7 +121,7 @@ class OneHotAction(base.Wrapper):
       assert action[self._key].min() == 0.0, action
       assert action[self._key].max() == 1.0, action
       assert action[self._key].sum() == 1.0, action
-    index = np.argmax(action[self._key])
+    index = np.argmax(action[self._key]).astype(np.int32)
     return self.env.step({**action, self._key: index})
 
   @staticmethod
