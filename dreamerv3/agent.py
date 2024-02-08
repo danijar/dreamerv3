@@ -23,7 +23,7 @@ from . import ninjax as nj
 class Agent(nj.Module):
 
   configs = yaml.YAML(typ='safe').load(
-      (embodied.Path(__file__).parent / 'configs.yaml').read())
+      (Path(__file__).parent / 'configs.yaml'))
 
   def __init__(self, obs_space, act_space, step, config):
     self.config = config
