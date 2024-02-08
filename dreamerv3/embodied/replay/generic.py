@@ -102,8 +102,28 @@ class Generic:
         seq = self.table[self.sampler()]
     else:
       seq = self.table[self.sampler()]
-    seq = {k: [step[k] for step in seq] for k in seq[0]}
-    seq = {k: embodied.convert(v) for k, v in seq.items()}
+    # seq = {k: [step[k] for step in seq] for k in seq[0]}
+    seq_ = {}
+    for k in seq[0]:
+      seq_[k] = []
+      for step in seq:
+        if k in step:
+          seq_[k].append(step[k])
+        elif "action" in step:
+          # I basically unpack the action dictionary into the sequence
+          seq_[k].append(step["action"][k])
+    seq = seq_
+    out = {}
+    for k, v in seq.items():
+      if isinstance(v[0], dict):
+        for act_dict in v:
+          if k not in out:
+            out[k] = []
+          out[k].append({k2: embodied.convert(v2) for k2, v2 in act_dict.items()})
+      else:
+        out[k] = embodied.convert(v)
+    seq = out
+    # seq = {k: embodied.convert(v) for k, v in seq.items()}
     if 'is_first' in seq:
       seq['is_first'][0] = True
     return seq

@@ -63,16 +63,28 @@ class Agent(nj.Module):
     expl_outs, expl_state = self.expl_behavior.policy(latent, expl_state)
     if mode == 'eval':
       outs = task_outs
-      outs['action'] = outs['action'].sample(seed=nj.rng())
-      outs['log_entropy'] = jnp.zeros(outs['action'].shape[:1])
+      if type(self.act_space) == dict:
+        outs['action'] = {k: w.mode() for k, w in outs['action'].items()}
+        outs['log_entropy'] = {k: w.entropy() for k, w in outs['action'].items()}
+      else:
+        outs['action'] = outs['action'].sample(seed=nj.rng())
+        outs['log_entropy'] = jnp.zeros(outs['action'].shape[:1])
     elif mode == 'explore':
       outs = expl_outs
-      outs['log_entropy'] = outs['action'].entropy()
-      outs['action'] = outs['action'].sample(seed=nj.rng())
+      if type(self.act_space) == dict:
+        outs['log_entropy'] = {k: w.entropy() for k, w in outs['action'].items()}
+        outs['action'] = {k: w.sample(seed=nj.rng()) for k, w in outs['action'].items()}
+      else:
+        outs['log_entropy'] = outs['action'].entropy()
+        outs['action'] = outs['action'].sample(seed=nj.rng())
     elif mode == 'train':
       outs = task_outs
-      outs['log_entropy'] = outs['action'].entropy()
-      outs['action'] = outs['action'].sample(seed=nj.rng())
+      if type(self.act_space) == dict:
+        outs['log_entropy'] = {k: w.entropy() for k, w in outs['action'].items()}
+        outs['action'] = {k: w.sample(seed=nj.rng()) for k, w in outs['action'].items()}
+      else:
+        outs['log_entropy'] = outs['action'].entropy()
+        outs['action'] = outs['action'].sample(seed=nj.rng())
     state = ((latent, outs['action']), task_state, expl_state)
     return outs, state
 
@@ -125,7 +137,8 @@ class WorldModel(nj.Module):
     try:
       self.act_space_shape = act_space['action'].shape
     except KeyError:
-      self.act_space_shape = tuple(a+b for a, b in zip(act_space['Continous'].shape, act_space['Discrete'].shape))
+      self.act_space_shape = {k: v.shape for k, v in act_space.items() if k != 'reset'}
+      #tuple(a+b for a, b in zip(act_space['Continous'].shape, act_space['Discrete'].shape))
     self.config = config
     shapes = {k: tuple(v.shape) for k, v in obs_space.items()}
     shapes = {k: v for k, v in shapes.items() if not k.startswith('log_')}
@@ -144,11 +157,18 @@ class WorldModel(nj.Module):
 
   def initial(self, batch_size):
     prev_latent = self.rssm.initial(batch_size)
-    prev_action = jnp.zeros((batch_size, *self.act_space_shape))
+    if type(self.act_space_shape) == dict:
+      prev_action = {k: jnp.zeros((batch_size, *v)) for k, v in self.act_space_shape.items()}
+    else:
+      prev_action = jnp.zeros((batch_size, *self.act_space_shape))
     return prev_latent, prev_action
 
   def train(self, data, state):
     modules = [self.encoder, self.rssm, *self.heads.values()]
+    if 'action' not in data:
+      data['action'] = {"Continous": data['Continous'], "Discrete": data['Discrete']}
+      data.pop('Continous')
+      data.pop('Discrete')
     mets, (state, outs, metrics) = self.opt(
         modules, self.loss, data, state, has_aux=True)
     metrics.update(mets)
@@ -157,13 +177,23 @@ class WorldModel(nj.Module):
   def loss(self, data, state):
     embed = self.encoder(data)
     prev_latent, prev_action = state
+    # Shape state: (prev_latent, prev_action), action can be a Dict if hybrid (Discrete + Continous)
     if 'action' not in data:
       if len(data['Continous'].shape) == 2:
         data['Continous'] = data['Continous'][..., None]
       if len(data['Discrete'].shape) == 2:
         data['Discrete'] = data['Discrete'][..., None]
-      data['action'] = jnp.concatenate([data['Discrete'], data['Continous']], -1)
-    prev_actions = jnp.concatenate([
+      
+      data['action'] = {"Continous": data['Continous'], "Discrete": data['Discrete']}
+      data.pop('Continous')
+      data.pop('Discrete')
+    
+    if isinstance(data['action'], dict):
+      prev_actions = {
+        k: jnp.concatenate([prev_action[k][:, None], 
+                            data['action'][k][:, :-1]], 1) for k in data['action']}
+    else:
+      prev_actions = jnp.concatenate([
         prev_action[:, None], data['action'][:, :-1]], 1)
     post, prior = self.rssm.observe(
         embed, prev_actions, data['is_first'], prev_latent)
@@ -185,7 +215,10 @@ class WorldModel(nj.Module):
     out = {'embed':  embed, 'post': post, 'prior': prior}
     out.update({f'{k}_loss': v for k, v in losses.items()})
     last_latent = {k: v[:, -1] for k, v in post.items()}
-    last_action = data['action'][:, -1]
+    if isinstance(data['action'], dict):
+      last_action = {k: v[:, -1] for k, v in data['action'].items()}
+    else:
+      last_action = data['action'][:, -1]
     state = last_latent, last_action
     metrics = self._metrics(data, dists, post, prior, losses, model_loss)
     return model_loss.mean(), (state, out, metrics)
@@ -201,9 +234,13 @@ class WorldModel(nj.Module):
       return {**state, 'action': policy(state)}
     traj = jaxutils.scan(
         step, jnp.arange(horizon), start, self.config.imag_unroll)
-    traj = 
-    traj = {
-        k: jnp.concatenate([start[k][None], v], 0) for k, v in traj.items()}
+    # traj = 
+    traj_ = {
+        k: jnp.concatenate([start[k][None], v], 0) for k, v in traj.items() if k != "action"}
+    Continous = jnp.concatenate([start["action"]["Continous"][None], traj["action"]["Continous"]], 0)
+    Discrete = jnp.concatenate([start["action"]["Discrete"][None], traj["action"]["Discrete"]], 0)
+    traj_["action"] = {"Continous": Continous, "Discrete": Discrete}
+    traj = traj_
     cont = self.heads['cont'](traj).mode()
     traj['cont'] = jnp.concatenate([first_cont[None], cont[1:]], 0)
     discount = 1 - 1 / self.config.horizon
@@ -214,13 +251,21 @@ class WorldModel(nj.Module):
     state = self.initial(len(data['is_first']))
     report = {}
     report.update(self.loss(data, state)[-1][-1])
+    if isinstance(data['action'], dict):
+      action_context, action_post = {}, {}
+      for k, v in data['action'].items():
+        action_context[k] = v[:6, :5]
+        action_post[k] = v[:6, 5:]
+    else:
+      action_context = data['action'][:6, :5]
+      action_post = data['action'][:6, 5:]
     context, _ = self.rssm.observe(
-        self.encoder(data)[:6, :5], data['action'][:6, :5],
+        self.encoder(data)[:6, :5], action_context,
         data['is_first'][:6, :5])
     start = {k: v[:, -1] for k, v in context.items()}
     recon = self.heads['decoder'](context)
     openl = self.heads['decoder'](
-        self.rssm.imagine(data['action'][:6, 5:], start))
+        self.rssm.imagine(action_post, start))
     for key in self.heads['decoder'].cnn_shapes.keys():
       truth = data[key][:6].astype(jnp.float32)
       model = jnp.concatenate([recon[key].mode()[:, :5], openl[key].mode()], 1)
@@ -318,13 +363,21 @@ class ImagActorCritic(nj.Module):
       metrics[f'{key}_return_rate'] = (jnp.abs(ret) >= 0.5).mean()
     adv = jnp.stack(advs).sum(0)
     policy = self.actor(sg(traj))
-    logpi = policy.log_prob(sg(traj['action']))[:-1]
+    if type(self.act_space) == dict:
+      logpi = {k: w.log_prob(sg(traj['action'][k]))[:-1] for k, w in policy.items()}
+      logpi = sum(logpi.values())
+    else:
+      logpi = policy.log_prob(sg(traj['action']))[:-1]
     loss = {'backprop': -adv, 'reinforce': -logpi * sg(adv)}
     if self.grad:
       loss = loss[self.grad]
     else:
       loss = sum(loss.values())
-    ent = policy.entropy()[:-1]
+    if type(self.act_space) == dict:
+      ent = {k: w.entropy()[:-1] for k, w in policy.items()}
+      ent = sum(ent.values())
+    else:
+      ent = policy.entropy()[:-1]
     loss -= self.config.actent * ent
     loss *= sg(traj['weight'])[:-1]
     loss *= self.config.loss_scales.actor
@@ -333,14 +386,29 @@ class ImagActorCritic(nj.Module):
 
   def _metrics(self, traj, policy, logpi, ent, adv):
     metrics = {}
-    ent = policy.entropy()[:-1]
-    rand = (ent - policy.minent) / (policy.maxent - policy.minent)
-    rand = rand.mean(range(2, len(rand.shape)))
-    act = traj['action']
-    act = jnp.argmax(act, -1) if self.act_space.discrete else act
-    metrics.update(jaxutils.tensorstats(act, 'action'))
-    metrics.update(jaxutils.tensorstats(rand, 'policy_randomness'))
-    metrics.update(jaxutils.tensorstats(ent, 'policy_entropy'))
+    if type(self.act_space) == dict:
+      ent = {k: w.entropy()[:-1] for k, w in policy.items()}
+      rand = {k: (ent[k] - w.minent) / (w.maxent - w.minent) for k, w in policy.items()}
+      act = {k: jnp.argmax(traj['action'][k], -1) for k in traj['action']}
+      # act = jnp.concatenate([act[k] for k in traj['action']], -1)
+
+      for k in traj['action']:
+        metrics.update(jaxutils.tensorstats(act[k], f'action_{k}'))
+      for k in rand:
+        metrics.update(jaxutils.tensorstats(rand[k], f'policy_randomness_{k}'))
+      for k in ent:
+        metrics.update(jaxutils.tensorstats(ent[k], f'policy_entropy_{k}'))
+      
+    else:
+      ent = policy.entropy()[:-1]
+      rand = (ent - policy.minent) / (policy.maxent - policy.minent)
+      rand = rand.mean(range(2, len(rand.shape)))
+      act = traj['action']
+      act = jnp.argmax(act, -1) if self.act_space.discrete else act
+
+      metrics.update(jaxutils.tensorstats(act, 'action'))
+      metrics.update(jaxutils.tensorstats(rand, 'policy_randomness'))
+      metrics.update(jaxutils.tensorstats(ent, 'policy_entropy'))
     metrics.update(jaxutils.tensorstats(logpi, 'policy_logprob'))
     metrics.update(jaxutils.tensorstats(adv, 'adv'))
     metrics['imag_weight_dist'] = jaxutils.subsample(traj['weight'])
@@ -369,7 +437,13 @@ class VFunction(nj.Module):
 
   def loss(self, traj, target):
     metrics = {}
-    traj = {k: v[:-1] for k, v in traj.items()}
+    if type(traj['action']) == dict:
+      action_continuous = traj['action']["Continous"]
+      action_discrete = traj['action']["Discrete"]
+      traj = {k: v[:-1] for k, v in traj.items() if k != 'action'}
+      traj["action"] = {"Continous": action_continuous, "Discrete": action_discrete}
+    else:
+      traj = {k: v[:-1] for k, v in traj.items()}
     dist = self.net(traj)
     loss = -dist.log_prob(sg(target))
     if self.config.critic_slowreg == 'logprob':
@@ -389,8 +463,12 @@ class VFunction(nj.Module):
 
   def score(self, traj, actor=None):
     rew = self.rewfn(traj)
-    assert len(rew) == len(traj['action']) - 1, (
-        'should provide rewards for all but last action')
+    if type(traj['action']) == dict:
+      action_continuous = traj['action']["Continous"]
+      action_discrete = traj['action']["Discrete"]
+    else:
+      assert len(rew) == len(traj['action']) - 1, (
+          'should provide rewards for all but last action')
     discount = 1 - 1 / self.config.horizon
     disc = traj['cont'][1:] * discount
     value = self.net(traj).mean()

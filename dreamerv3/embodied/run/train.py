@@ -42,6 +42,21 @@ def train(agent, env, replay, logger, args):
     for key in args.log_keys_video:
       if key in ep:
         stats[f'policy_{key}'] = ep[key]
+
+    # Flip from Dict of Lists of Dicts to Dict of Dicts of Lists to Dict of Lists
+    ep_ = ep.copy()
+    for key, value in ep.items():
+      if isinstance(value[0], dict):
+        collect = {}
+        for action in value:
+          for k2, v2 in action.items():
+            if k2 not in collect:
+              collect[k2] = []
+            collect[k2].append(list(v2) if v2.shape else np.float32(v2))
+          for k2, v2 in collect.items():
+            ep_[f"{key}_{k2}"] = np.array(collect[k2])
+        del ep_[key]
+    ep = ep_
     for key, value in ep.items():
       if not args.log_zeros and key not in nonzeros and (value == 0).all():
         continue
@@ -109,3 +124,17 @@ def train(agent, env, replay, logger, args):
     if should_save(step):
       checkpoint.save()
   logger.write()
+
+
+def dict_inverter(d):
+    for key, value in d.items():
+      if isinstance(value[0], dict):
+        collect = {}
+        for action in value:
+          for k2, v2 in action.items():
+            if k2 not in collect:
+              collect[k2] = []
+            collect[k2].append(v2)
+        print(f'Collecting {key} with keys {collect.keys()}')
+        d[key] = collect
+        value = collect

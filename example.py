@@ -9,9 +9,9 @@ def main():
 
   # See configs.yaml for all options.
   config = embodied.Config(dreamerv3.configs['defaults'])
-  config = config.update(dreamerv3.configs['debug'])
+  config = config.update(dreamerv3.configs['small'])
   config = config.update({
-      'logdir': '~/logdir/debug_0',
+      'logdir': '~/logdir/run_1',
       'run.train_ratio': 64,
       'run.log_every': 30,  # Seconds
       'batch_size': 16,
@@ -20,7 +20,7 @@ def main():
       'decoder.mlp_keys': '.*',
       'encoder.cnn_keys': '$^',
       'decoder.cnn_keys': '$^',
-      # 'jax.platform': 'cpu',
+      'jax.platform': 'gpu',
   })
   config = embodied.Flags(config).parse()
 
