@@ -53,7 +53,7 @@ class Driver:
       for k, v in acts["action"].items():
         acts[k] = v
       del acts["action"]
-    if "log_entropy" in acts:
+    if "log_entropy" in acts and isinstance(acts["log_entropy"], dict):
       for k, v in acts["log_entropy"].items():
         acts[f"log_entropy_{k}"] = v
       del acts["log_entropy"]

@@ -166,6 +166,8 @@ class WorldModel(nj.Module):
   def train(self, data, state):
     modules = [self.encoder, self.rssm, *self.heads.values()]
     if 'action' not in data:
+      assert "Continous" in data and "Discrete" in data, \
+        "Action should be a Dict with keys 'Continous' and 'Discrete', otherwise use a single action space"
       data['action'] = {"Continous": data['Continous'], "Discrete": data['Discrete']}
       data.pop('Continous')
       data.pop('Discrete')
@@ -235,12 +237,15 @@ class WorldModel(nj.Module):
     traj = jaxutils.scan(
         step, jnp.arange(horizon), start, self.config.imag_unroll)
     # traj = 
-    traj_ = {
-        k: jnp.concatenate([start[k][None], v], 0) for k, v in traj.items() if k != "action"}
-    Continous = jnp.concatenate([start["action"]["Continous"][None], traj["action"]["Continous"]], 0)
-    Discrete = jnp.concatenate([start["action"]["Discrete"][None], traj["action"]["Discrete"]], 0)
-    traj_["action"] = {"Continous": Continous, "Discrete": Discrete}
-    traj = traj_
+    if "Continous" in start["action"]:
+      traj_ = {
+          k: jnp.concatenate([start[k][None], v], 0) for k, v in traj.items() if k != "action"}
+      Continous = jnp.concatenate([start["action"]["Continous"][None], traj["action"]["Continous"]], 0)
+      Discrete = jnp.concatenate([start["action"]["Discrete"][None], traj["action"]["Discrete"]], 0)
+      traj_["action"] = {"Continous": Continous, "Discrete": Discrete}
+      traj = traj_
+    else:
+      traj = {k: jnp.concatenate([start[k][None], v], 0) for k, v in traj.items()}
     cont = self.heads['cont'](traj).mode()
     traj['cont'] = jnp.concatenate([first_cont[None], cont[1:]], 0)
     discount = 1 - 1 / self.config.horizon
