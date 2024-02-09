@@ -1,5 +1,7 @@
 cloudpickle
 crafter
+# wheel==0.38.4 # For gym
+# setuptools==65.5.0  # Needed for gym
 gym==0.19.0
 jax
 jaxlib

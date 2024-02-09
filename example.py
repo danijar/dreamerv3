@@ -4,21 +4,23 @@ def main():
   import dreamerv3
   from dreamerv3 import embodied
   warnings.filterwarnings('ignore', '.*truncated to dtype int32.*')
+  import gym
+#   from gym.wrappers import StepAPICompatibility
 
   # See configs.yaml for all options.
   config = embodied.Config(dreamerv3.configs['defaults'])
-  config = config.update(dreamerv3.configs['medium'])
+  config = config.update(dreamerv3.configs['small'])
   config = config.update({
-      'logdir': '~/logdir/run1',
+      'logdir': '~/logdir/run_1',
       'run.train_ratio': 64,
       'run.log_every': 30,  # Seconds
       'batch_size': 16,
       'jax.prealloc': False,
-      'encoder.mlp_keys': '$^',
-      'decoder.mlp_keys': '$^',
-      'encoder.cnn_keys': 'image',
-      'decoder.cnn_keys': 'image',
-      # 'jax.platform': 'cpu',
+      'encoder.mlp_keys': '.*',
+      'decoder.mlp_keys': '.*',
+      'encoder.cnn_keys': '$^',
+      'decoder.cnn_keys': '$^',
+      'jax.platform': 'gpu',
   })
   config = embodied.Flags(config).parse()
 
@@ -32,10 +34,11 @@ def main():
       # embodied.logger.MLFlowOutput(logdir.name),
   ])
 
-  import crafter
-  from embodied.envs import from_gym
-  env = crafter.Env()  # Replace this with your Gym env.
-  env = from_gym.FromGym(env, obs_key='image')  # Or obs_key='vector'.
+ 
+  from dreamerv3.embodied.envs import from_gym
+  env = gym.make('CartPole-v1')
+#   env.render(mode = "human")
+  env = from_gym.FromGym(env, obs_key='vector')  # Or obs_key='vector'.
   env = dreamerv3.wrap_env(env, config)
   env = embodied.BatchEnv([env], parallel=False)
 

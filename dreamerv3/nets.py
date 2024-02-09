@@ -53,9 +53,21 @@ class RSSM(nj.Module):
   def observe(self, embed, action, is_first, state=None):
     swap = lambda x: x.transpose([1, 0] + list(range(2, len(x.shape))))
     if state is None:
-      state = self.initial(action.shape[0])
+      if isinstance(action, dict):
+        if "Discrete" in action:
+          state = self.initial(action["Discrete"].shape[0])
+        elif "Continuous" in action:
+          state = self.initial(action["Continuous"].shape[0])
+        else:
+          raise ValueError(action)
+      else:
+        state = self.initial(action.shape[0])
+    if isinstance(action, dict):
+      action = {k: swap(v) for k, v in action.items()}
+    else:
+      action = swap(action)
     step = lambda prev, inputs: self.obs_step(prev[0], *inputs)
-    inputs = swap(action), swap(embed), swap(is_first)
+    inputs = action, swap(embed), swap(is_first)
     start = state, state
     post, prior = jaxutils.scan(step, inputs, start, self._unroll)
     post = {k: swap(v) for k, v in post.items()}
@@ -64,9 +76,19 @@ class RSSM(nj.Module):
 
   def imagine(self, action, state=None):
     swap = lambda x: x.transpose([1, 0] + list(range(2, len(x.shape))))
-    state = self.initial(action.shape[0]) if state is None else state
+    if isinstance(action, dict):  #TODO: Make clearer
+      if state is None:
+        if "Discrete" in action:
+          state = self.initial(action["Discrete"].shape[0])
+        elif "Continuous" in action:
+          state = self.initial(action["Continuous"].shape[0])
+        else:
+          raise ValueError(action)
+      action = {k: swap(v) for k, v in action.items()}
+    else:
+      state = self.initial(action.shape[0]) if state is None else state
+      action = swap(action)
     assert isinstance(state, dict), state
-    action = swap(action)
     prior = jaxutils.scan(self.img_step, action, state, self._unroll)
     prior = {k: swap(v) for k, v in prior.items()}
     return prior
@@ -82,6 +104,9 @@ class RSSM(nj.Module):
 
   def obs_step(self, prev_state, prev_action, embed, is_first):
     is_first = cast(is_first)
+    if type(prev_action) == dict:
+      # Here continous and discrete actions are concatenated to be passed in the world model
+      prev_action = jnp.concatenate([v for k, v in prev_action.items()], -1)
     prev_action = cast(prev_action)
     if self._action_clip > 0.0:
       prev_action *= sg(self._action_clip / jnp.maximum(
@@ -101,10 +126,17 @@ class RSSM(nj.Module):
     return cast(post), cast(prior)
 
   def img_step(self, prev_state, prev_action):
+    if isinstance(prev_action, dict):
+      prev_action = jnp.concatenate([v for k, v in prev_action.items()], -1)
     prev_stoch = prev_state['stoch']
     prev_action = cast(prev_action)
     if self._action_clip > 0.0:
-      prev_action *= sg(self._action_clip / jnp.maximum(
+      if type(prev_action) == dict:
+        prev_action = jax.tree_util.tree_map(
+            lambda x: x*sg(self._action_clip / jnp.maximum(
+                self._action_clip, jnp.abs(x))), prev_action)
+      else:
+        prev_action *= sg(self._action_clip / jnp.maximum(
           self._action_clip, jnp.abs(prev_action)))
     if self._classes:
       shape = prev_stoch.shape[:-2] + (self._stoch * self._classes,)
@@ -216,9 +248,14 @@ class MultiEncoder(nj.Module):
   def __call__(self, data):
     some_key, some_shape = list(self.shapes.items())[0]
     batch_dims = data[some_key].shape[:-len(some_shape)]
-    data = {
-        k: v.reshape((-1,) + v.shape[len(batch_dims):])
-        for k, v in data.items()}
+    data_ = {}
+    for k, v in data.items():
+      if isinstance(v, dict):
+        data_[k] = {k2: v2.reshape((-1,) + v2.shape[len(batch_dims):])
+                    for k2, v2 in v.items()}
+      else:
+        data_[k] = v.reshape((-1,) + v.shape[len(batch_dims):])
+    data = data_
     outputs = []
     if self.cnn_shapes:
       inputs = jnp.concatenate([data[k] for k in self.cnn_shapes], -1)
@@ -415,9 +452,14 @@ class MLP(nj.Module):
     self._inputs = Input(inputs, dims=dims)
     self._symlog_inputs = symlog_inputs
     distkeys = (
-        'dist', 'outscale', 'minstd', 'maxstd', 'outnorm', 'unimix', 'bins')
+        'dist', 'outscale', 'minstd', 'maxstd', 'outnorm', 'unimix', 'bins',
+        "dist_cont", "dist_disc")
     self._dense = {k: v for k, v in kw.items() if k not in distkeys}
     self._dist = {k: v for k, v in kw.items() if k in distkeys}
+    from collections import defaultdict
+    self._dist_dict = defaultdict(lambda: self._dist["dist"])
+    if 'dist_cont' in kw and "dist_disc" in kw:
+      self._dist_dict.update({"Continous": kw["dist_cont"], "Discrete": kw["dist_disc"]})
 
   def __call__(self, inputs):
     feat = self._inputs(inputs)
@@ -438,7 +480,7 @@ class MLP(nj.Module):
       raise ValueError(self._shape)
 
   def _out(self, name, shape, x):
-    return self.get(f'dist_{name}', Dist, shape, **self._dist)(x)
+    return self.get(f'dist_{name}', Dist, shape, dist=self._dist_dict[name])(x)  # , **self._dist
 
 
 class Dist(nj.Module):
