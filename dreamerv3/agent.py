@@ -400,7 +400,7 @@ class ImagActorCritic(nj.Module):
 
       # act = jnp.concatenate([act[k] for k in traj['action']], -1)
 
-      for k in traj['action']:
+      for k in act:
         metrics.update(jaxutils.tensorstats(act[k], f'action_{k}'))
       for k in rand:
         metrics.update(jaxutils.tensorstats(rand[k], f'policy_randomness_{k}'))
