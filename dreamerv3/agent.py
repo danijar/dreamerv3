@@ -394,7 +394,9 @@ class ImagActorCritic(nj.Module):
     if type(self.act_space) == dict:
       ent = {k: w.entropy()[:-1] for k, w in policy.items()}
       rand = {k: (ent[k] - w.minent) / (w.maxent - w.minent) for k, w in policy.items()}
-      act = {k: jnp.argmax(traj['action'][k], -1) for k in traj['action']}
+      act = {k: jnp.argmax(traj['action'][k], -1) for k in traj['action'] \
+        if self.act_space[k].discrete else traj['action'][k]}
+
       # act = jnp.concatenate([act[k] for k in traj['action']], -1)
 
       for k in traj['action']:
