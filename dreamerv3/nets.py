@@ -104,15 +104,24 @@ class RSSM(nj.Module):
 
   def obs_step(self, prev_state, prev_action, embed, is_first):
     is_first = cast(is_first)
-    if type(prev_action) == dict:
-      # Here continous and discrete actions are concatenated to be passed in the world model
-      prev_action = jnp.concatenate([v for k, v in prev_action.items()], -1)
     prev_action = cast(prev_action)
     if self._action_clip > 0.0:
-      prev_action *= sg(self._action_clip / jnp.maximum(
-          self._action_clip, jnp.abs(prev_action)))
-    prev_state, prev_action = jax.tree_util.tree_map(
-        lambda x: self._mask(x, 1.0 - is_first), (prev_state, prev_action))
+      if isinstance(prev_action, dict):
+        prev_action = jax.tree_util.tree_map(
+            lambda x: x*sg(self._action_clip / jnp.maximum(
+                self._action_clip, jnp.abs(x))), prev_action)
+      else:
+        prev_action *= sg(self._action_clip / jnp.maximum(
+            self._action_clip, jnp.abs(prev_action)))
+    if isinstance(prev_action, dict):
+      prev_state = jax.tree_util.tree_map(
+          lambda x: x + self._mask(x, is_first), prev_state)
+      for k, v in prev_action.items():
+        prev_action[k] = jax.tree_util.tree_map(
+            lambda x: x + self._mask(x, is_first), v)
+    else:
+      prev_state, prev_action = jax.tree_util.tree_map(
+          lambda x: self._mask(x, 1.0 - is_first), (prev_state, prev_action))
     prev_state = jax.tree_util.tree_map(
         lambda x, y: x + self._mask(y, is_first),
         prev_state, self.initial(len(is_first)))
@@ -126,18 +135,18 @@ class RSSM(nj.Module):
     return cast(post), cast(prior)
 
   def img_step(self, prev_state, prev_action):
-    if isinstance(prev_action, dict):
-      prev_action = jnp.concatenate([v for k, v in prev_action.items()], -1)
     prev_stoch = prev_state['stoch']
     prev_action = cast(prev_action)
     if self._action_clip > 0.0:
-      if type(prev_action) == dict:
+      if isinstance(prev_action, dict):
         prev_action = jax.tree_util.tree_map(
             lambda x: x*sg(self._action_clip / jnp.maximum(
                 self._action_clip, jnp.abs(x))), prev_action)
       else:
         prev_action *= sg(self._action_clip / jnp.maximum(
           self._action_clip, jnp.abs(prev_action)))
+    if isinstance(prev_action, dict):
+      prev_action = jnp.concatenate([v for k, v in prev_action.items()], -1)
     if self._classes:
       shape = prev_stoch.shape[:-2] + (self._stoch * self._classes,)
       prev_stoch = prev_stoch.reshape(shape)

@@ -5,16 +5,17 @@ def main():
   from dreamerv3 import embodied
   warnings.filterwarnings('ignore', '.*truncated to dtype int32.*')
   import gym
+  import gymnasium
 #   from gym.wrappers import StepAPICompatibility
 
   # See configs.yaml for all options.
   config = embodied.Config(dreamerv3.configs['defaults'])
   config = config.update(dreamerv3.configs['small'])
   config = config.update({
-      'logdir': '~/logdir/run_1',
+      'logdir': '~/logdir/run_15',
       'run.train_ratio': 64,
       'run.log_every': 30,  # Seconds
-      'batch_size': 16,
+      'batch_size': 4,
       'jax.prealloc': False,
       'encoder.mlp_keys': '.*',
       'decoder.mlp_keys': '.*',
@@ -36,8 +37,8 @@ def main():
 
  
   from dreamerv3.embodied.envs import from_gym
-  env = gym.make('CartPole-v1')
-#   env.render(mode = "human")
+  env = gymnasium.make('CartPole-v1', render_mode='human')
+  env = gymnasium.wrappers.StepAPICompatibility(env, output_truncation_bool=False)
   env = from_gym.FromGym(env, obs_key='vector')  # Or obs_key='vector'.
   env = dreamerv3.wrap_env(env, config)
   env = embodied.BatchEnv([env], parallel=False)

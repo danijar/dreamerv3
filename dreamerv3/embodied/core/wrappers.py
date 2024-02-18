@@ -121,7 +121,7 @@ class OneHotAction(base.Wrapper):
       assert action[self._key].min() == 0.0, action
       assert action[self._key].max() == 1.0, action
       assert action[self._key].sum() == 1.0, action
-    index = np.argmax(action[self._key]).astype(np.int32)
+    index = np.argmax(action[self._key])
     return self.env.step({**action, self._key: index})
 
   @staticmethod
