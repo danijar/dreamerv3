@@ -33,6 +33,7 @@ class Chunk:
   def append(self, step):
     if not self.data:
       if "action" in step and isinstance(step["action"], dict):
+        print(step)
         example = {}
         for k, v in step.items():
           if isinstance(v, dict):
@@ -61,8 +62,8 @@ class Chunk:
         self.data = {
             k: np.empty((self.size,) + v.shape, v.dtype)
             for k, v in example.items()}
-        for key, value in step.items():
-          self.data[key][self.length] = value
+    for key, value in step.items():
+      self.data[key][self.length] = value
 
     self.length += 1
 
