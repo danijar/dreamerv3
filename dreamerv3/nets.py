@@ -107,21 +107,21 @@ class RSSM(nj.Module):
     prev_action = cast(prev_action)
     if self._action_clip > 0.0:
       if isinstance(prev_action, dict):
-        prev_action = jax.tree_util.tree_map(
-            lambda x: x*sg(self._action_clip / jnp.maximum(
-                self._action_clip, jnp.abs(x))), prev_action)
+        for k, v in prev_action.items():
+          prev_action[k] *= sg(self._action_clip / jnp.maximum(
+            self._action_clip, jnp.abs(prev_action[k])))
       else:
         prev_action *= sg(self._action_clip / jnp.maximum(
             self._action_clip, jnp.abs(prev_action)))
-    if isinstance(prev_action, dict):
-      prev_state = jax.tree_util.tree_map(
-          lambda x: x + self._mask(x, is_first), prev_state)
-      for k, v in prev_action.items():
-        prev_action[k] = jax.tree_util.tree_map(
-            lambda x: x + self._mask(x, is_first), v)
-    else:
-      prev_state, prev_action = jax.tree_util.tree_map(
-          lambda x: self._mask(x, 1.0 - is_first), (prev_state, prev_action))
+    # if isinstance(prev_action, dict):
+    #   prev_state = jax.tree_util.tree_map(
+    #       lambda x: x + self._mask(x, is_first), prev_state)
+    #   for k, v in prev_action.items():
+    #     prev_action[k] = jax.tree_util.tree_map(
+    #         lambda x: x + self._mask(x, is_first), v)
+    # else:
+    prev_state, prev_action = jax.tree_util.tree_map(
+        lambda x: self._mask(x, 1.0 - is_first), (prev_state, prev_action))
     prev_state = jax.tree_util.tree_map(
         lambda x, y: x + self._mask(y, is_first),
         prev_state, self.initial(len(is_first)))
@@ -139,12 +139,12 @@ class RSSM(nj.Module):
     prev_action = cast(prev_action)
     if self._action_clip > 0.0:
       if isinstance(prev_action, dict):
-        prev_action = jax.tree_util.tree_map(
-            lambda x: x*sg(self._action_clip / jnp.maximum(
-                self._action_clip, jnp.abs(x))), prev_action)
+        for k, v in prev_action.items():
+          prev_action[k] *= sg(self._action_clip / jnp.maximum(
+            self._action_clip, jnp.abs(prev_action[k])))
       else:
         prev_action *= sg(self._action_clip / jnp.maximum(
-          self._action_clip, jnp.abs(prev_action)))
+            self._action_clip, jnp.abs(prev_action)))
     if isinstance(prev_action, dict):
       prev_action = jnp.concatenate([v for k, v in prev_action.items()], -1)
     if self._classes:

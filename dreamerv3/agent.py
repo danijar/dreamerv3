@@ -54,27 +54,13 @@ class Agent(nj.Module):
   def policy(self, obs, state, mode='train'):
     self.config.jax.jit and print('Tracing policy function.')
     obs = self.preprocess(obs)
-    print("obs")
-    print(obs)
     (prev_latent, prev_action), task_state, expl_state = state
     embed = self.wm.encoder(obs)
-    print("embed")
-    print(embed)
     latent, _ = self.wm.rssm.obs_step(
         prev_latent, prev_action, embed, obs['is_first'])
     self.expl_behavior.policy(latent, expl_state)
-    print("latent")
-    print(latent)
     task_outs, task_state = self.task_behavior.policy(latent, task_state)
     expl_outs, expl_state = self.expl_behavior.policy(latent, expl_state)
-    print("task_outs")
-    print(task_outs)
-    print("expl_outs")
-    print(expl_outs)
-    print("task_state")
-    print(task_state)
-    print("expl_state")
-    print(expl_state)
     if mode == 'eval':
       outs = task_outs
       if type(self.act_space) == dict:
@@ -384,7 +370,7 @@ class ImagActorCritic(nj.Module):
     policy = self.actor(sg(traj))
     if type(self.act_space) == dict:
       logpi = {k: w.log_prob(sg(traj['action'][k]))[:-1] for k, w in policy.items()}
-      logpi = sum(logpi.values())
+      logpi = logpi["Discrete"] if self.grad_cont != "reinforce" else sum(logpi.values())
     else:
       logpi = policy.log_prob(sg(traj['action']))[:-1]
     loss = {'backprop': -adv, 'reinforce': -logpi * sg(adv)}
@@ -488,6 +474,8 @@ class VFunction(nj.Module):
     if type(traj['action']) == dict:
       action_continuous = traj['action']["Continous"]
       action_discrete = traj['action']["Discrete"]
+      assert len(rew) == len(traj['action']["Continous"]) - 1, (
+          'should provide rewards for all but last action')
     else:
       assert len(rew) == len(traj['action']) - 1, (
           'should provide rewards for all but last action')
