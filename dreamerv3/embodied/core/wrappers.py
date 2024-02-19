@@ -82,7 +82,7 @@ class NormalizeAction(base.Wrapper):
 
   def __init__(self, env, key='action'):
     super().__init__(env)
-    self._key = key
+    self._key_cont = key
     self._space = env.act_space[key]
     self._mask = np.isfinite(self._space.low) & np.isfinite(self._space.high)
     self._low = np.where(self._mask, self._space.low, -1)
@@ -93,36 +93,36 @@ class NormalizeAction(base.Wrapper):
     low = np.where(self._mask, -np.ones_like(self._low), self._low)
     high = np.where(self._mask, np.ones_like(self._low), self._high)
     space = spacelib.Space(np.float32, self._space.shape, low, high)
-    return {**self.env.act_space, self._key: space}
+    return {**self.env.act_space, self._key_cont: space}
 
   def step(self, action):
-    orig = (action[self._key] + 1) / 2 * (self._high - self._low) + self._low
-    orig = np.where(self._mask, orig, action[self._key])
-    return self.env.step({**action, self._key: orig})
+    orig = (action[self._key_cont] + 1) / 2 * (self._high - self._low) + self._low
+    orig = np.where(self._mask, orig, action[self._key_cont])
+    return self.env.step({**action, self._key_cont: orig})
 
 
 class OneHotAction(base.Wrapper):
 
   def __init__(self, env, key='action'):
     super().__init__(env)
-    self._count = int(env.act_space[key].high)
-    self._key = key
+    self._count_disc = int(env.act_space[key].high)
+    self._key_disc = key
 
   @functools.cached_property
   def act_space(self):
-    shape = (self._count,)
+    shape = (self._count_disc,)
     space = spacelib.Space(np.float32, shape, 0, 1)
-    space.sample = functools.partial(self._sample_action, self._count)
+    space.sample = functools.partial(self._sample_action, self._count_disc)
     space._discrete = True
-    return {**self.env.act_space, self._key: space}
+    return {**self.env.act_space, self._key_disc: space}
 
   def step(self, action):
     if not action['reset']:
-      assert action[self._key].min() == 0.0, action
-      assert action[self._key].max() == 1.0, action
-      assert action[self._key].sum() == 1.0, action
-    index = np.argmax(action[self._key])
-    return self.env.step({**action, self._key: index})
+      assert action[self._key_disc].min() == 0.0, action
+      assert action[self._key_disc].max() == 1.0, action
+      assert action[self._key_disc].sum() == 1.0, action
+    index = np.argmax(action[self._key_disc])
+    return self.env.step({**action, self._key_disc: index})
 
   @staticmethod
   def _sample_action(count):

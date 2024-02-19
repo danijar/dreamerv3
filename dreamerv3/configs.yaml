@@ -13,7 +13,7 @@ defaults:
   jax:
     platform: gpu
     jit: True
-    precision: float32
+    precision: float16
     prealloc: True
     debug_nans: False
     logical_cpus: 0
