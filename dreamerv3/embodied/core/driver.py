@@ -51,7 +51,7 @@ class Driver:
     acts, next_state = policy(obs, self._state, **self._kwargs)
     if self._state:
       if str(next_state[0][0]["deter"][0][0]) == "nan":
-        print("nan")
+        raise ValueError(f"nan in next_state: {next_state}")
     acts, self._state = policy(obs, self._state, **self._kwargs)
     if "action" in acts and isinstance(acts["action"], dict):
       for k, v in acts["action"].items():

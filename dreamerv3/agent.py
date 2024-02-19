@@ -54,13 +54,27 @@ class Agent(nj.Module):
   def policy(self, obs, state, mode='train'):
     self.config.jax.jit and print('Tracing policy function.')
     obs = self.preprocess(obs)
+    print("obs")
+    print(obs)
     (prev_latent, prev_action), task_state, expl_state = state
     embed = self.wm.encoder(obs)
+    print("embed")
+    print(embed)
     latent, _ = self.wm.rssm.obs_step(
         prev_latent, prev_action, embed, obs['is_first'])
     self.expl_behavior.policy(latent, expl_state)
+    print("latent")
+    print(latent)
     task_outs, task_state = self.task_behavior.policy(latent, task_state)
     expl_outs, expl_state = self.expl_behavior.policy(latent, expl_state)
+    print("task_outs")
+    print(task_outs)
+    print("expl_outs")
+    print(expl_outs)
+    print("task_state")
+    print(task_state)
+    print("expl_state")
+    print(expl_state)
     if mode == 'eval':
       outs = task_outs
       if type(self.act_space) == dict:

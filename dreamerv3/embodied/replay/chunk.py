@@ -73,6 +73,7 @@ class Chunk:
     filename = f'{self.time}-{self.uuid}-{succ}-{self.length}.npz'
     filename = embodied.Path(directory) / filename
     data = {k: embodied.convert(v) for k, v in self.data.items()}
+    assert np.all(np.isin(data["Discrete"], [0, 1]))
     with io.BytesIO() as stream:
       np.savez_compressed(stream, **data)
       stream.seek(0)

@@ -179,7 +179,7 @@ class JAXAgent(embodied.Agent):
   def _convert_inps(self, value, devices):
     if "Continous" in value:
       if any(str(value["Continous"][i]) == "nan" for i in range(len(value["Continous"]))):
-        print("nan")
+        raise ValueError("Nan in continous")
     if len(devices) == 1:
       value = jax.device_put(value, devices[0])
     else:
