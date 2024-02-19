@@ -92,6 +92,16 @@ class Batcher:
           if isinstance(elem, Exception):
             raise elem
         batch = {k: np.stack([x[k] for x in elems], 0) for k in elems[0]}
+        # batch = {}
+        # for k in elems[0]:
+        #   out = []
+        #   for x in elems:
+        #     if isinstance(x[k][0], dict):
+        #       out.append({kk: np.stack([xx[kk] for xx in x[k]], 0) for kk in x[k][0]})
+        #     else:
+        #       out.append(x[k])
+        #   batch[k] = np.stack(out, 0)
+
         if self._postprocess:
           batch = self._postprocess(batch)
         output.put(batch)  # Will wait here if the queue is full.

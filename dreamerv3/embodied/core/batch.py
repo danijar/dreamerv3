@@ -24,11 +24,18 @@ class BatchEnv(base.Env):
     return len(self._envs)
 
   def step(self, action):
-    assert all(len(v) == len(self._envs) for v in action.values()), (
+    assert all(len(v) == len(self._envs) for v in action.values() if not isinstance(v, dict)), (
+        len(self._envs), {k: v.shape for k, v in action.items()})
+    assert all(len(v2) == len(self._envs) for v in action.values() if isinstance(v, dict) for v2 in v.values()), (
         len(self._envs), {k: v.shape for k, v in action.items()})
     obs = []
     for i, env in enumerate(self._envs):
-      act = {k: v[i] for k, v in action.items()}
+      act = {}
+      for k, v in action.items():
+        if isinstance(v, dict):
+          act[k] = {k2: v2[i] for k2, v2 in v.items()}
+        else:
+          act[k] = v[i]
       obs.append(env.step(act))
     if self._parallel:
       obs = [ob() for ob in obs]

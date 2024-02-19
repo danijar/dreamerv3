@@ -1,1 +1,2 @@
-include requirements.txt
+include requirements.txt *.yaml *.txt *.json*.txt LICENSE Dockerfile
+recursive-include *.yaml *.txt *.json*.txt

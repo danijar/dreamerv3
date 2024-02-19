@@ -32,12 +32,38 @@ class Chunk:
 
   def append(self, step):
     if not self.data:
-      example = {k: embodied.convert(v) for k, v in step.items()}
-      self.data = {
-          k: np.empty((self.size,) + v.shape, v.dtype)
-          for k, v in example.items()}
+      if "action" in step and isinstance(step["action"], dict):
+        example = {}
+        for k, v in step.items():
+          if isinstance(v, dict):
+            example[k] = {k2: embodied.convert(v2) for k2, v2 in v.items()}
+          else:
+            example[k] = embodied.convert(v)
+        
+        self.data = {}
+        for k, v in example.items():
+          if isinstance(v, dict):
+            self.data[k] = {
+              k2: np.empty((self.size,) + v2.shape, v2.dtype)
+              for k2, v2 in v.items()}
+          else:
+            self.data[k] = np.empty((self.size,) + v.shape, v.dtype)
+        
+        for key, value in step.items():
+          if isinstance(value, dict):
+            for k2, v2 in value.items():
+              self.data[key][k2][self.length] = v2
+          else:
+            self.data[key][self.length] = value
+
+      else:
+        example = {k: embodied.convert(v) for k, v in step.items()}
+        self.data = {
+            k: np.empty((self.size,) + v.shape, v.dtype)
+            for k, v in example.items()}
     for key, value in step.items():
       self.data[key][self.length] = value
+
     self.length += 1
 
   def save(self, directory):
@@ -46,6 +72,7 @@ class Chunk:
     filename = f'{self.time}-{self.uuid}-{succ}-{self.length}.npz'
     filename = embodied.Path(directory) / filename
     data = {k: embodied.convert(v) for k, v in self.data.items()}
+    # assert np.all(np.isin(data["Discrete"], [0, 1])), np.where(~np.isin(data["Discrete"], [0, 1]))
     with io.BytesIO() as stream:
       np.savez_compressed(stream, **data)
       stream.seek(0)
