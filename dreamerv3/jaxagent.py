@@ -177,9 +177,6 @@ class JAXAgent(embodied.Agent):
       self._policy = nj.pmap(self._policy, 'i', static=['mode'], **kw)
 
   def _convert_inps(self, value, devices):
-    if "Continous" in value:
-      if any(str(value["Continous"][i]) == "nan" for i in range(len(value["Continous"]))):
-        print("nan")
     if len(devices) == 1:
       value = jax.device_put(value, devices[0])
     else:

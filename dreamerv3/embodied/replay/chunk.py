@@ -33,7 +33,6 @@ class Chunk:
   def append(self, step):
     if not self.data:
       if "action" in step and isinstance(step["action"], dict):
-        print(step)
         example = {}
         for k, v in step.items():
           if isinstance(v, dict):
@@ -73,6 +72,7 @@ class Chunk:
     filename = f'{self.time}-{self.uuid}-{succ}-{self.length}.npz'
     filename = embodied.Path(directory) / filename
     data = {k: embodied.convert(v) for k, v in self.data.items()}
+    # assert np.all(np.isin(data["Discrete"], [0, 1])), np.where(~np.isin(data["Discrete"], [0, 1]))
     with io.BytesIO() as stream:
       np.savez_compressed(stream, **data)
       stream.seek(0)

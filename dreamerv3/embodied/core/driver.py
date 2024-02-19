@@ -48,10 +48,6 @@ class Driver:
     obs = self._env.step(acts)
     obs = {k: convert(v) for k, v in obs.items()}
     assert all(len(x) == len(self._env) for x in obs.values()), obs
-    acts, next_state = policy(obs, self._state, **self._kwargs)
-    if self._state:
-      if str(next_state[0][0]["deter"][0][0]) == "nan":
-        print("nan")
     acts, self._state = policy(obs, self._state, **self._kwargs)
     if "action" in acts and isinstance(acts["action"], dict):
       for k, v in acts["action"].items():

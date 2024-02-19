@@ -370,7 +370,7 @@ class ImagActorCritic(nj.Module):
     policy = self.actor(sg(traj))
     if type(self.act_space) == dict:
       logpi = {k: w.log_prob(sg(traj['action'][k]))[:-1] for k, w in policy.items()}
-      logpi = sum(logpi.values())
+      logpi = logpi["Discrete"] if self.grad_cont != "reinforce" else sum(logpi.values())
     else:
       logpi = policy.log_prob(sg(traj['action']))[:-1]
     loss = {'backprop': -adv, 'reinforce': -logpi * sg(adv)}
@@ -474,6 +474,8 @@ class VFunction(nj.Module):
     if type(traj['action']) == dict:
       action_continuous = traj['action']["Continous"]
       action_discrete = traj['action']["Discrete"]
+      assert len(rew) == len(traj['action']["Continous"]) - 1, (
+          'should provide rewards for all but last action')
     else:
       assert len(rew) == len(traj['action']) - 1, (
           'should provide rewards for all but last action')
