@@ -9,12 +9,16 @@ from tensorflow_probability.substrates import jax as tfp
 from . import ninjax as nj
 
 tfd = tfp.distributions
-tree_map = jax.tree_util.tree_map
+tree_map = jax.tree_util.tree_map # This is a function from the jax.tree_util module that applies a given function to each element in a nested structure (such as lists, tuples, dictionaries, etc.) in a recursive manner
 sg = lambda x: tree_map(jax.lax.stop_gradient, x)
 COMPUTE_DTYPE = jnp.float32
 
 
 def cast_to_compute(values):
+  """ 
+   change the data type of all the elements within a nested structure (values) to a specific data type used for computation,
+   here the type is COMPUTE_DTYPE which is jnp.float32
+  """
   return tree_map(lambda x: x.astype(COMPUTE_DTYPE), values)
 
 
@@ -48,22 +52,33 @@ def subsample(values, amount=1024):
 
 
 def scan(fn, inputs, start, unroll=True, modify=False):
-  fn2 = lambda carry, inp: (fn(carry, inp),) * 2
+  """
+  iter though the inputs trajectory, and get the posterior and prior dict for all timesteps (containing stacked z_1:T, h_1:T,...) (prior + post)  
+  
+  inputs: wap(action), swap(embed), swap(is_first) , each SHAPE:(T,B,.)
+  start: initial state (post_dict, prior_dict), here post_dict and prior_dict are the same when init
+  """
+  fn2 = lambda carry, inp: (fn(carry, inp),) * 2 # copy the fn output to become a tuple of 2 elements
   if not unroll:
+    # TODO: this line unclear
     return nj.scan(fn2, start, inputs, modify=modify)[1]
-  length = len(jax.tree_util.tree_leaves(inputs)[0])
-  carrydef = jax.tree_util.tree_structure(start)
+  # a "leaf" is defined as an element that cannot be further broken down in terms of the data structure hierarchy.
+  length = len(jax.tree_util.tree_leaves(inputs)[0]) # Trajectory length, inputs[0]: action (T,B,.) after swapped
+  carrydef = jax.tree_util.tree_structure(start)   # carrydef: the structure (post_dict, prior_dict)
   carry = start
   outs = []
   for index in range(length):
-    carry, out = fn2(carry, tree_map(lambda x: x[index], inputs))
-    flat, treedef = jax.tree_util.tree_flatten(out)
+    # carry is the state, it passed on to the next timestep
+    carry, out = fn2(carry, tree_map(lambda x: x[index], inputs)) # extract each timestep of inputs:(action,embed,is_first), pass it to fn:obs_step()
+    flat, treedef = jax.tree_util.tree_flatten(out)  # out: (post_dict, prior_dict)
     assert treedef == carrydef, (treedef, carrydef)
-    outs.append(flat)
+    outs.append(flat) # outs: [z_0,h_0,z_0_prob,est_z_0...],[z_1...
+  # stack all z_t , all h_t, all z_t_prob, all est_z_t..., and put the stacked results into a list
+  # after stacking z_1:T ,SHAPE:(T,B,.)
   outs = [
       jnp.stack([carry[i] for carry in outs], 0)
-      for i in range(len(outs[0]))]
-  return carrydef.unflatten(outs)
+      for i in range(len(outs[0]))]  # len(outs[0])---6 for logit /7 for mean+std (post+prior:[z_0,h_0,z_0_prob,est_z_0...])
+  return carrydef.unflatten(outs)    # return the form back to (post_dict, prior_dict)
 
 
 def symlog(x):

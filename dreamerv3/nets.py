@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from tensorflow_probability.substrates import jax as tfp
+
 f32 = jnp.float32
 tfd = tfp.distributions
 tree_map = jax.tree_util.tree_map
@@ -11,6 +12,7 @@ sg = lambda x: tree_map(jax.lax.stop_gradient, x)
 
 from . import jaxutils
 from . import ninjax as nj
+
 cast = jaxutils.cast_to_compute
 
 
@@ -19,9 +21,9 @@ class RSSM(nj.Module):
   def __init__(
       self, deter=1024, stoch=32, classes=32, unroll=False, initial='learned',
       unimix=0.01, action_clip=1.0, **kw):
-    self._deter = deter
-    self._stoch = stoch
-    self._classes = classes
+    self._deter = deter # deterministic latent state size, h_t
+    self._stoch = stoch # stochastic latent state size, z_t
+    self._classes = classes # number of classes for discrete latent state, if 0, it is continuous
     self._unroll = unroll
     self._initial = initial
     self._unimix = unimix
@@ -29,12 +31,19 @@ class RSSM(nj.Module):
     self._kw = kw
 
   def initial(self, bs):
+    """ 
+    Initialize the state of the model
+
+    stoch is a sample of prob (logit /mean+std) ,can be the mode of the prob distribution 
+    """
     if self._classes:
+      # if it is dicrete/classification, the state includes a one-hot vector logits for each dim in stochastic latent state
       state = dict(
           deter=jnp.zeros([bs, self._deter], f32),
           logit=jnp.zeros([bs, self._stoch, self._classes], f32),
           stoch=jnp.zeros([bs, self._stoch, self._classes], f32))
     else:
+      # if it is regression, the state includes a mean and std for value in each dim in stochastic latent state
       state = dict(
           deter=jnp.zeros([bs, self._deter], f32),
           mean=jnp.zeros([bs, self._stoch], f32),
@@ -44,21 +53,29 @@ class RSSM(nj.Module):
       return cast(state)
     elif self._initial == 'learned':
       deter = self.get('initial', jnp.zeros, state['deter'][0].shape, f32)
-      state['deter'] = jnp.repeat(jnp.tanh(deter)[None], bs, 0)
-      state['stoch'] = self.get_stoch(cast(state['deter']))
+      state['deter'] = jnp.repeat(jnp.tanh(deter)[None], bs, 0)  #now shape: (BS,self._deter)  ,add a new batch dim to the front and then replicates the array across this new dimension to match the batch size (bs).
+      state['stoch'] = self.get_stoch(cast(state['deter']))  # init stoch sample using the dynamics predictor 'img_out'
       return cast(state)
     else:
       raise NotImplementedError(self._initial)
 
   def observe(self, embed, action, is_first, state=None):
+    """  
+    Fig.3(a) --- use real-world embedded observation and action trajectory, for World Model learning
+   
+    action: (B,T,A), A is the action dim
+    Return:
+    (posterior dict, prior dict) for all timesteps (containing stacked z_1:T, h_1:T,...) each SHAPE: (B,T,.)
+    different from the tuple of dicts having individual z_t, h_t,... as in the output of obs_step
+    """
     swap = lambda x: x.transpose([1, 0] + list(range(2, len(x.shape))))
     if state is None:
       state = self.initial(action.shape[0])
-    step = lambda prev, inputs: self.obs_step(prev[0], *inputs)
-    inputs = swap(action), swap(embed), swap(is_first)
-    start = state, state
+    step = lambda prev, inputs: self.obs_step(prev[0], *inputs) # here use the posterior dict and unpack the inputs tuple
+    inputs = swap(action), swap(embed), swap(is_first)  # move the second dim to the first, now (T,B,.)
+    start = state, state         # init for the first step, so prior=post=state
     post, prior = jaxutils.scan(step, inputs, start, self._unroll)
-    post = {k: swap(v) for k, v in post.items()}
+    post = {k: swap(v) for k, v in post.items()}   # first dim again to B---> (B,T,.)
     prior = {k: swap(v) for k, v in prior.items()}
     return post, prior
 
@@ -72,61 +89,83 @@ class RSSM(nj.Module):
     return prior
 
   def get_dist(self, state, argmax=False):
+    """ 
+    convert logits / mean+std in state dict to a tensor flow distribution 
+    """
     if self._classes:
       logit = state['logit'].astype(f32)
-      return tfd.Independent(jaxutils.OneHotDist(logit), 1)
+      return tfd.Independent(jaxutils.OneHotDist(logit), 1) # specifying that the last dimension of your distribution's output (here, the categorical outcomes) should be treated as part of the independent event space rather than separate instances
     else:
       mean = state['mean'].astype(f32)
       std = state['std'].astype(f32)
       return tfd.MultivariateNormalDiag(mean, std)
 
   def obs_step(self, prev_state, prev_action, embed, is_first):
+    """  
+    prev_state: {z_t-1, h_t-1, z_prob_t-1} , each SHAPE: (B,.)
+    prev_action: a_t-1
+    embed: intermediate representation of the observation
+    is_first: boolean indicating whether the current state is the first state in an episode
+    
+    Output: posterior dict:{z_t, h_t, z_prob_t}, prior dict:{ est_z_t,h_t,est_z_prob_t}
+    """
     is_first = cast(is_first)
     prev_action = cast(prev_action)
-    if self._action_clip > 0.0:
+    if self._action_clip > 0.0: # clip the action above a certain value 
       prev_action *= sg(self._action_clip / jnp.maximum(
           self._action_clip, jnp.abs(prev_action)))
-    prev_state, prev_action = jax.tree_util.tree_map(
-        lambda x: self._mask(x, 1.0 - is_first), (prev_state, prev_action))
+    prev_state, prev_action = jax.tree_util.tree_map(             # ensure that the prev_state and prev_action reset to 0 at the start of each new episode or sequence.
+        lambda x: self._mask(x, 1.0 - is_first), (prev_state, prev_action))   
     prev_state = jax.tree_util.tree_map(
         lambda x, y: x + self._mask(y, is_first),
-        prev_state, self.initial(len(is_first)))
-    prior = self.img_step(prev_state, prev_action)
-    x = jnp.concatenate([prior['deter'], embed], -1)
+        prev_state, self.initial(len(is_first)))   # replace/add the first state (already 0) with the initial state, len(is_first) is the batch size
+    prior = self.img_step(prev_state, prev_action) # include est_z_t
+    x = jnp.concatenate([prior['deter'], embed], -1)  # prepare for encoder output
     x = self.get('obs_out', Linear, **self._kw)(x)
     stats = self._stats('obs_stats', x)
     dist = self.get_dist(stats)
-    stoch = dist.sample(seed=nj.rng())
+    stoch = dist.sample(seed=nj.rng()) # sample from the z_t distribution (posterior)
     post = {'stoch': stoch, 'deter': prior['deter'], **stats}
     return cast(post), cast(prior)
 
   def img_step(self, prev_state, prev_action):
+    """  
+    Here performs the dynamics model (GRU) and the dynamics predictor (Linear)
+
+    Input: { z_t-1,h_t-1, z_prob_t-1}, a_t-1  
+    Output: { est_z_t,h_t,est_z_prob_t}
+    """
     prev_stoch = prev_state['stoch']
     prev_action = cast(prev_action)
-    if self._action_clip > 0.0:
+    if self._action_clip > 0.0: # ensure clipping of the action
       prev_action *= sg(self._action_clip / jnp.maximum(
           self._action_clip, jnp.abs(prev_action)))
     if self._classes:
-      shape = prev_stoch.shape[:-2] + (self._stoch * self._classes,)
+      shape = prev_stoch.shape[:-2] + (self._stoch * self._classes,) # (B,T,self._stoch * self._classes)
       prev_stoch = prev_stoch.reshape(shape)
     if len(prev_action.shape) > len(prev_stoch.shape):  # 2D actions.
-      shape = prev_action.shape[:-2] + (np.prod(prev_action.shape[-2:]),)
+      shape = prev_action.shape[:-2] + (np.prod(prev_action.shape[-2:]),) # flatten multi-dim actions
       prev_action = prev_action.reshape(shape)
-    x = jnp.concatenate([prev_stoch, prev_action], -1)
-    x = self.get('img_in', Linear, **self._kw)(x)
-    x, deter = self._gru(x, prev_state['deter'])
-    x = self.get('img_out', Linear, **self._kw)(x)
-    stats = self._stats('img_stats', x)
+    x = jnp.concatenate([prev_stoch, prev_action], -1) # concatenate the previous stochastic state and the action
+    x = self.get('img_in', Linear, **self._kw)(x)  # x---(z_t-1,a_t-1)
+    x, deter = self._gru(x, prev_state['deter'])   # Sequence model (dynamics): GRU ,deter:h_t
+    x = self.get('img_out', Linear, **self._kw)(x)  # 'img_out':Dynamics predictor 
+    stats = self._stats('img_stats', x)           #---> estimated z_t
     dist = self.get_dist(stats)
-    stoch = dist.sample(seed=nj.rng())
+    stoch = dist.sample(seed=nj.rng()) # sample from the est_z_t distribution (prior)
     prior = {'stoch': stoch, 'deter': deter, **stats}
     return cast(prior)
 
   def get_stoch(self, deter):
-    x = self.get('img_out', Linear, **self._kw)(deter)
+    """ 
+    use dynamics predictor 'img_out' to produce a mode of the stochasctic latent var distribution
+
+    using NNs (several linear layers) to convert deterministic input to the mode of a distribution
+    """
+    x = self.get('img_out', Linear, **self._kw)(deter) # if img_out not exists, create a Linear layer with the params specified in self._kw
     stats = self._stats('img_stats', x)
     dist = self.get_dist(stats)
-    return cast(dist.mode())
+    return cast(dist.mode()) 
 
   def _gru(self, x, deter):
     x = jnp.concatenate([deter, x], -1)
@@ -140,10 +179,14 @@ class RSSM(nj.Module):
     return deter, deter
 
   def _stats(self, name, x):
+    """ 
+    given input x, apply a Linear layer to x and return a prob. distribution of the stochastic latent state.
+    Here have the 1% uniform + 99% NN output trick for discrete problem (in dynamics and encoder)
+    """
     if self._classes:
       x = self.get(name, Linear, self._stoch * self._classes)(x)
       logit = x.reshape(x.shape[:-1] + (self._stoch, self._classes))
-      if self._unimix:
+      if self._unimix:  # 1% uniform + 99% NN output ---> correspond to the last paragraph of world model learning 
         probs = jax.nn.softmax(logit, -1)
         uniform = jnp.ones_like(probs) / probs.shape[-1]
         probs = (1 - self._unimix) * probs + self._unimix * uniform
@@ -152,11 +195,14 @@ class RSSM(nj.Module):
       return stats
     else:
       x = self.get(name, Linear, 2 * self._stoch)(x)
-      mean, std = jnp.split(x, 2, -1)
+      mean, std = jnp.split(x, 2, -1) # split the array x into two parts along the last axis 
       std = 2 * jax.nn.sigmoid(std / 2) + 0.1
       return {'mean': mean, 'std': std}
 
   def _mask(self, value, mask):
+    """ 
+    applies a batch-wise mask to a multi-dimensional array, (e.g. some batches are masked out)
+    """
     return jnp.einsum('b...,b->b...', value, mask.astype(value.dtype))
 
   def dyn_loss(self, post, prior, impl='kl', free=1.0):
@@ -564,7 +610,7 @@ class Linear(nj.Module):
   def __init__(
       self, units, act='none', norm='none', bias=True, outscale=1.0,
       outnorm=False, winit='uniform', fan='avg'):
-    self._units = tuple(units) if hasattr(units, '__len__') else (units,)
+    self._units = tuple(units) if hasattr(units, '__len__') else (units,) #out_features dims
     self._act = get_act(act)
     self._norm = norm
     self._bias = bias and norm == 'none'
@@ -574,7 +620,11 @@ class Linear(nj.Module):
     self._fan = fan
 
   def __call__(self, x):
-    shape = (x.shape[-1], np.prod(self._units))
+    """ 
+    pass the input x through the linear layer with kernel (weights), bias, normalization and activation function
+    and reshape the output to the desired shape (e.g. flattened last dim into multiple dims)
+    """
+    shape = (x.shape[-1], np.prod(self._units)) # calculate shape of the kernel (input_dim,temp_out_dim)
     kernel = self.get('kernel', Initializer(
         self._winit, self._outscale, fan=self._fan), shape)
     kernel = jaxutils.cast_to_compute(kernel)
@@ -583,8 +633,8 @@ class Linear(nj.Module):
       bias = self.get('bias', jnp.zeros, np.prod(self._units), np.float32)
       bias = jaxutils.cast_to_compute(bias)
       x += bias
-    if len(self._units) > 1:
-      x = x.reshape(x.shape[:-1] + self._units)
+    if len(self._units) > 1:  # When the length of self._units is more than one, the output should be reshaped into a shape that is not simply flat but has multiple dimensions.
+      x = x.reshape(x.shape[:-1] + self._units) # x:(batch_size, temp_out_features)--->(batch_size, unit1, unit2)
     x = self.get('norm', Norm, self._norm)(x)
     x = self._act(x)
     return x
@@ -645,6 +695,9 @@ class Initializer:
     self.fan = fan
 
   def __call__(self, shape):
+    """ 
+    calculate the initial value of the kernel (weights) based on the shape of the kernel and the distribution type
+    """
     if self.scale == 0.0:
       value = jnp.zeros(shape, f32)
     elif self.dist == 'uniform':
@@ -675,6 +728,12 @@ class Initializer:
     return value
 
   def _fans(self, shape):
+    """ 
+    calculate the "fan-in" and "fan-out" values for a given tensor shape, which are commonly used for initializing weights in neural networks. 
+    These values help define the scale of weight initialization, ensuring appropriate variance across layers 
+    y = X @ W, each row of X is a sample
+    Output: fan_in (input dim), fan_out (output dim)
+    """
     if len(shape) == 0:
       return 1, 1
     elif len(shape) == 1:
@@ -687,6 +746,9 @@ class Initializer:
 
 
 def get_act(name):
+  """ 
+  get the activation function by name 
+  """
   if callable(name):
     return name
   elif name == 'none':

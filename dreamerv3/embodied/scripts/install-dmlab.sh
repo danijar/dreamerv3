@@ -9,7 +9,7 @@ apt-get update && apt-get install -y \
     software-properties-common unzip zip zlib1g-dev g++
 pip3 install numpy
 
-# Bazel
+# Bazel , !!must install 6.4.0, follow step 2 on https://bazel.build/install/ubuntu
 apt-get install -y apt-transport-https curl gnupg
 curl -fsSL https://bazel.build/bazel-release.pub.gpg | gpg --dearmor > bazel.gpg
 mv bazel.gpg /etc/apt/trusted.gpg.d/

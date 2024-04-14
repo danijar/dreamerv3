@@ -102,6 +102,10 @@ class Agent(nj.Module):
     return report
 
   def preprocess(self, obs):
+    """ 
+    Input image in [0, 255] and convert to [0, 1].
+    continue flag is 1 if not terminal, 0 otherwise.
+    """
     obs = obs.copy()
     for key, value in obs.items():
       if key.startswith('log_') or key in ('key',):
@@ -149,9 +153,9 @@ class WorldModel(nj.Module):
     return state, outs, metrics
 
   def loss(self, data, state):
-    embed = self.encoder(data)
+    embed = self.encoder(data)  # z_t, maybe a prob, distribution
     prev_latent, prev_action = state
-    prev_actions = jnp.concatenate([
+    prev_actions = jnp.concatenate([                        # all previous actions (including the most recent one)
         prev_action[:, None], data['action'][:, :-1]], 1)
     post, prior = self.rssm.observe(
         embed, prev_actions, data['is_first'], prev_latent)
@@ -242,7 +246,7 @@ class ImagActorCritic(nj.Module):
     critics = {k: v for k, v in critics.items() if scales[k]}
     for key, scale in scales.items():
       assert not scale or key in critics, key
-    self.critics = {k: v for k, v in critics.items() if scales[k]}
+    self.critics = {k: v for k, v in critics.items() if scales[k]}  # TODO: is it using asynchrnous critics?
     self.scales = scales
     self.act_space = act_space
     self.config = config
@@ -265,23 +269,30 @@ class ImagActorCritic(nj.Module):
   def train(self, imagine, start, context):
     def loss(start):
       policy = lambda s: self.actor(sg(s)).sample(seed=nj.rng())
-      traj = imagine(policy, start, self.config.imag_horizon)
+      traj = imagine(policy, start, self.config.imag_horizon)  # Fig.3(b) imagine the trajectory
       loss, metrics = self.loss(traj)
       return loss, (traj, metrics)
-    mets, (traj, metrics) = self.opt(self.actor, loss, start, has_aux=True)
+    mets, (traj, metrics) = self.opt(self.actor, loss, start, has_aux=True) # train actor
     metrics.update(mets)
     for key, critic in self.critics.items():
-      mets = critic.train(traj, self.actor)
+      mets = critic.train(traj, self.actor)  # train critic
       metrics.update({f'{key}_critic_{k}': v for k, v in mets.items()})
     return traj, metrics
 
   def loss(self, traj):
+    """ 
+    Function (11) + (12)
+    TODO: scaling mechanism not clear,sg(traj['weight']) not clear, how to get percentile of the return batch not clear---probably calculated among all trajs in a batch at each timestep?
+    """
     metrics = {}
     advs = []
     total = sum(self.scales[k] for k in self.critics)
     for key, critic in self.critics.items():
-      rew, ret, base = critic.score(traj, self.actor)
+      rew, ret, base = critic.score(traj, self.actor) # r_1:T, R_0:T-1, V_0:T-1
       offset, invscale = self.retnorms[key](ret)
+      # offset (lo)--> EMA of the 5% quantile of the return batch, invscale (max(1, hi - lo)) ---> denominator of the first term in (11)
+      # grad_pi E_pi(a|s)[ (q(s,a) - lo) / max(1, hi - lo) - (V(s) - lo) / max(1, hi - lo) ]
+      # = E_pi(a|s)[ A(s,a) / max(1, hi - lo) grad_pi log pi(a | s) ]
       normed_ret = (ret - offset) / invscale
       normed_base = (base - offset) / invscale
       advs.append((normed_ret - normed_base) * self.scales[key] / total)
@@ -291,9 +302,9 @@ class ImagActorCritic(nj.Module):
       metrics[f'{key}_return_rate'] = (jnp.abs(ret) >= 0.5).mean()
     adv = jnp.stack(advs).sum(0)
     policy = self.actor(sg(traj))
-    logpi = policy.log_prob(sg(traj['action']))[:-1]
-    loss = {'backprop': -adv, 'reinforce': -logpi * sg(adv)}[self.grad]
-    ent = policy.entropy()[:-1]
+    logpi = policy.log_prob(sg(traj['action']))[:-1]                    # first term in (11)
+    loss = {'backprop': -adv, 'reinforce': -logpi * sg(adv)}[self.grad] # determine from continuous action or discrete
+    ent = policy.entropy()[:-1]  # second term in (11)
     loss -= self.config.actent * ent
     loss *= sg(traj['weight'])[:-1]
     loss *= self.config.loss_scales.actor
@@ -317,7 +328,10 @@ class ImagActorCritic(nj.Module):
 
 
 class VFunction(nj.Module):
+  """ 
+  A critic type
 
+  """
   def __init__(self, rewfn, config):
     self.rewfn = rewfn
     self.config = config
@@ -337,35 +351,44 @@ class VFunction(nj.Module):
     return metrics
 
   def loss(self, traj, target):
+    """ 
+     function (10)
+     target: R_t, t=0,1,2,...,T-1
+     
+    """
     metrics = {}
     traj = {k: v[:-1] for k, v in traj.items()}
-    dist = self.net(traj)
-    loss = -dist.log_prob(sg(target))
+    dist = self.net(traj)  # distribution of the twohot vector prediction
+    loss = -dist.log_prob(sg(target))  # critic loss, semi-gradient
     if self.config.critic_slowreg == 'logprob':
       reg = -dist.log_prob(sg(self.slow(traj).mean()))
     elif self.config.critic_slowreg == 'xent':
       reg = -jnp.einsum(
           '...i,...i->...',
           sg(self.slow(traj).probs),
-          jnp.log(dist.probs))
+          jnp.log(dist.probs))   #do dot product in the last dim and get rid of the last dim
     else:
       raise NotImplementedError(self.config.critic_slowreg)
-    loss += self.config.loss_scales.slowreg * reg
+    loss += self.config.loss_scales.slowreg * reg # EMA regularization, regualrize the critic towards the EMA version (slow critic) of itself
     loss = (loss * sg(traj['weight'])).mean()
     loss *= self.config.loss_scales.critic
     metrics = jaxutils.tensorstats(dist.mean())
     return loss, metrics
 
   def score(self, traj, actor=None):
-    rew = self.rewfn(traj)
+    """ 
+     function (7)
+     self.rewfn ---> the reward predictor, rew ---> r
+    """
+    rew = self.rewfn(traj) # not include the last reward r_T+1, so: r_1, r_2, ..., r_T
     assert len(rew) == len(traj['action']) - 1, (
         'should provide rewards for all but last action')
-    discount = 1 - 1 / self.config.horizon
-    disc = traj['cont'][1:] * discount
-    value = self.net(traj).mean()
-    vals = [value[-1]]
+    discount = 1 - 1 / self.config.horizon #gamma
+    disc = traj['cont'][1:] * discount #gamma *c_t , t=0,1,2,...,T-1
+    value = self.net(traj).mean()  # critic value
+    vals = [value[-1]] # R_T
     interm = rew + disc * value[1:] * (1 - self.config.return_lambda)
     for t in reversed(range(len(disc))):
-      vals.append(interm[t] + disc[t] * self.config.return_lambda * vals[-1])
-    ret = jnp.stack(list(reversed(vals))[:-1])
+      vals.append(interm[t] + disc[t] * self.config.return_lambda * vals[-1]) #backpass for R_t , t=T-1, T-2, ... 0
+    ret = jnp.stack(list(reversed(vals))[:-1]) # R_t, t=0,1,2,...,T-1, exclude R_T
     return rew, ret, value[:-1]

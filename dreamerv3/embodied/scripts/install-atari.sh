@@ -10,6 +10,7 @@ pip3 install gym==0.19.0
 pip3 install atari-py==0.2.9
 pip3 install opencv-python
 
+# make sure the ROMS are installed properly or follow the instructions here https://github.com/openai/atari-py#roms
 mkdir roms && cd roms
 wget -L -nv http://www.atarimania.com/roms/Roms.rar
 unrar x -o+ Roms.rar

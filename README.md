@@ -54,7 +54,7 @@ If you just want to run DreamerV3 on a custom environment, you can `pip install
 dreamerv3` and copy [`example.py`][example] from this repository as a starting
 point.
 
-## Docker
+## Docker (likely broken)
 
 If you want to make modifications to the code, you can either use the provided
 `Dockerfile` that contains instructions or follow the manual instructions
@@ -81,6 +81,7 @@ python dreamerv3/train.py \
   --logdir ~/logdir/$(date "+%Y%m%d-%H%M%S") \
   --configs crafter --batch_size 16 --run.train_ratio 32
 ```
+Environments installation can follow the bash files in `dreamerv3/embodied/scripts`.
 
 # Tips
 
