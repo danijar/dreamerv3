@@ -1,21 +1,39 @@
+import collections
 import re
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+from jax.experimental import checkify
 from tensorflow_probability.substrates import jax as tfp
 
 from . import ninjax as nj
 
 tfd = tfp.distributions
-tree_map = jax.tree_util.tree_map
-sg = lambda x: tree_map(jax.lax.stop_gradient, x)
-COMPUTE_DTYPE = jnp.float32
+tfb = tfp.bijectors
+treemap = jax.tree_util.tree_map
+sg = lambda x: treemap(jax.lax.stop_gradient, x)
+f32 = jnp.float32
+i32 = jnp.int32
+COMPUTE_DTYPE = f32
+PARAM_DTYPE = f32
+ENABLE_CHECKS = False
 
 
 def cast_to_compute(values):
-  return tree_map(lambda x: x.astype(COMPUTE_DTYPE), values)
+  return treemap(
+      lambda x: x if x.dtype == COMPUTE_DTYPE else x.astype(COMPUTE_DTYPE),
+      values)
+
+
+def get_param_dtype():
+  return PARAM_DTYPE
+
+
+def check(predicate, message, **kwargs):
+  if ENABLE_CHECKS:
+    checkify.check(predicate, message, **kwargs)
 
 
 def parallel():
@@ -26,57 +44,65 @@ def parallel():
     return False
 
 
+def scan(fun, carry, xs, unroll=False, axis=0):
+  unroll = jax.tree_util.tree_leaves(xs)[0].shape[axis] if unroll else 1
+  return nj.scan(fun, carry, xs, False, unroll, axis)
+
+
 def tensorstats(tensor, prefix=None):
+  assert tensor.size > 0, tensor.shape
+  assert jnp.issubdtype(tensor.dtype, jnp.floating), tensor.dtype
+  tensor = tensor.astype(f32)  # To avoid overflows.
   metrics = {
       'mean': tensor.mean(),
       'std': tensor.std(),
-      'mag': jnp.abs(tensor).max(),
+      'mag': jnp.abs(tensor).mean(),
       'min': tensor.min(),
       'max': tensor.max(),
       'dist': subsample(tensor),
   }
   if prefix:
-    metrics = {f'{prefix}_{k}': v for k, v in metrics.items()}
+    metrics = {f'{prefix}/{k}': v for k, v in metrics.items()}
   return metrics
 
 
 def subsample(values, amount=1024):
   values = values.flatten()
   if len(values) > amount:
-    values = jax.random.permutation(nj.rng(), values)[:amount]
+    values = jax.random.permutation(nj.seed(), values)[:amount]
   return values
 
 
-def scan(fn, inputs, start, unroll=True, modify=False):
-  fn2 = lambda carry, inp: (fn(carry, inp),) * 2
-  if not unroll:
-    return nj.scan(fn2, start, inputs, modify=modify)[1]
-  length = len(jax.tree_util.tree_leaves(inputs)[0])
-  carrydef = jax.tree_util.tree_structure(start)
-  carry = start
-  outs = []
-  for index in range(length):
-    carry, out = fn2(carry, tree_map(lambda x: x[index], inputs))
-    flat, treedef = jax.tree_util.tree_flatten(out)
-    assert treedef == carrydef, (treedef, carrydef)
-    outs.append(flat)
-  outs = [
-      jnp.stack([carry[i] for carry in outs], 0)
-      for i in range(len(outs[0]))]
-  return carrydef.unflatten(outs)
-
-
 def symlog(x):
-  return jnp.sign(x) * jnp.log(1 + jnp.abs(x))
+  return jnp.sign(x) * jnp.log1p(jnp.abs(x))
 
 
 def symexp(x):
-  return jnp.sign(x) * (jnp.exp(jnp.abs(x)) - 1)
+  return jnp.sign(x) * jnp.expm1(jnp.abs(x))
+
+
+def switch(pred, lhs, rhs):
+  def fn(lhs, rhs):
+    assert lhs.shape == rhs.shape, (pred.shape, lhs.shape, rhs.shape)
+    mask = pred
+    while len(mask.shape) < len(lhs.shape):
+      mask = mask[..., None]
+    return jnp.where(mask, lhs, rhs)
+  return treemap(fn, lhs, rhs)
+
+
+def reset(xs, reset):
+  def fn(x):
+    mask = reset
+    while len(mask.shape) < len(x.shape):
+      mask = mask[..., None]
+    return x * (1 - mask.astype(x.dtype))
+  return treemap(fn, xs)
 
 
 class OneHotDist(tfd.OneHotCategorical):
 
-  def __init__(self, logits=None, probs=None, dtype=jnp.float32):
+  def __init__(self, logits=None, probs=None, dtype=f32):
     super().__init__(logits, probs, dtype)
 
   @classmethod
@@ -86,7 +112,8 @@ class OneHotDist(tfd.OneHotCategorical):
   def sample(self, sample_shape=(), seed=None):
     sample = sg(super().sample(sample_shape, seed))
     probs = self._pad(super().probs_parameter(), sample.shape)
-    return sg(sample) + (probs - sg(probs)).astype(sample.dtype)
+    sample = sg(sample) + (probs - sg(probs)).astype(sample.dtype)
+    return sample
 
   def _pad(self, tensor, shape):
     while len(tensor.shape) < len(shape):
@@ -121,33 +148,25 @@ class MSEDist:
     return -loss
 
 
-class SymlogDist:
+class HuberDist:
 
-  def __init__(self, mode, dims, dist='mse', agg='sum', tol=1e-8):
+  def __init__(self, mode, dims, agg='sum'):
     self._mode = mode
     self._dims = tuple([-x for x in range(1, dims + 1)])
-    self._dist = dist
     self._agg = agg
-    self._tol = tol
     self.batch_shape = mode.shape[:len(mode.shape) - dims]
     self.event_shape = mode.shape[len(mode.shape) - dims:]
 
   def mode(self):
-    return symexp(self._mode)
+    return self._mode
 
   def mean(self):
-    return symexp(self._mode)
+    return self._mode
 
   def log_prob(self, value):
     assert self._mode.shape == value.shape, (self._mode.shape, value.shape)
-    if self._dist == 'mse':
-      distance = (self._mode - symlog(value)) ** 2
-      distance = jnp.where(distance < self._tol, 0, distance)
-    elif self._dist == 'abs':
-      distance = jnp.abs(self._mode - symlog(value))
-      distance = jnp.where(distance < self._tol, 0, distance)
-    else:
-      raise NotImplementedError(self._dist)
+    distance = ((self._mode - value) ** 2)
+    distance = jnp.sqrt(1 + distance) - 1
     if self._agg == 'mean':
       loss = distance.mean(self._dims)
     elif self._agg == 'sum':
@@ -157,33 +176,88 @@ class SymlogDist:
     return -loss
 
 
-class DiscDist:
+class TransformedMseDist:
+
+  def __init__(self, mode, dims, fwd, bwd, agg='sum', tol=1e-8):
+    self._mode = mode
+    self._dims = tuple([-x for x in range(1, dims + 1)])
+    self._fwd = fwd
+    self._bwd = bwd
+    self._agg = agg
+    self._tol = tol
+    self.batch_shape = mode.shape[:len(mode.shape) - dims]
+    self.event_shape = mode.shape[len(mode.shape) - dims:]
+
+  def mode(self):
+    return self._bwd(self._mode)
+
+  def mean(self):
+    return self._bwd(self._mode)
+
+  def log_prob(self, value):
+    assert self._mode.shape == value.shape, (self._mode.shape, value.shape)
+    distance = (self._mode - self._fwd(value)) ** 2
+    distance = jnp.where(distance < self._tol, 0, distance)
+    if self._agg == 'mean':
+      loss = distance.mean(self._dims)
+    elif self._agg == 'sum':
+      loss = distance.sum(self._dims)
+    else:
+      raise NotImplementedError(self._agg)
+    return -loss
+
+
+class TwoHotDist:
 
   def __init__(
-      self, logits, dims=0, low=-20, high=20,
-      transfwd=symlog, transbwd=symexp):
+      self, logits, bins, dims=0, transfwd=None, transbwd=None):
+    assert logits.shape[-1] == len(bins), (logits.shape, len(bins))
+    assert logits.dtype == f32, logits.dtype
+    assert bins.dtype == f32, bins.dtype
     self.logits = logits
     self.probs = jax.nn.softmax(logits)
     self.dims = tuple([-x for x in range(1, dims + 1)])
-    self.bins = jnp.linspace(low, high, logits.shape[-1])
-    self.low = low
-    self.high = high
-    self.transfwd = transfwd
-    self.transbwd = transbwd
+    self.bins = jnp.array(bins)
+    self.transfwd = transfwd or (lambda x: x)
+    self.transbwd = transbwd or (lambda x: x)
     self.batch_shape = logits.shape[:len(logits.shape) - dims - 1]
     self.event_shape = logits.shape[len(logits.shape) - dims: -1]
 
   def mean(self):
-    return self.transbwd((self.probs * self.bins).sum(-1))
+    # The naive implementation results in a non-zero result even if the bins
+    # are symmetric and the probabilities uniform, because the sum operation
+    # goes left to right, accumulating numerical errors. Instead, we use a
+    # symmetric sum to ensure that the predicted rewards and values are
+    # actually zero at initialization.
+    # return self.transbwd((self.probs * self.bins).sum(-1))
+    n = self.logits.shape[-1]
+    if n % 2 == 1:
+      m = (n - 1) // 2
+      p1 = self.probs[..., :m]
+      p2 = self.probs[..., m: m + 1]
+      p3 = self.probs[..., m + 1:]
+      b1 = self.bins[..., :m]
+      b2 = self.bins[..., m: m + 1]
+      b3 = self.bins[..., m + 1:]
+      wavg = (p2 * b2).sum(-1) + ((p1 * b1)[..., ::-1] + (p3 * b3)).sum(-1)
+      return self.transbwd(wavg)
+    else:
+      p1 = self.probs[..., :n // 2]
+      p2 = self.probs[..., n // 2:]
+      b1 = self.bins[..., :n // 2]
+      b2 = self.bins[..., n // 2:]
+      wavg = ((p1 * b1)[..., ::-1] + (p2 * b2)).sum(-1)
+      return self.transbwd(wavg)
 
   def mode(self):
     return self.transbwd((self.probs * self.bins).sum(-1))
 
   def log_prob(self, x):
+    assert x.dtype == f32, x.dtype
     x = self.transfwd(x)
-    below = (self.bins <= x[..., None]).astype(jnp.int32).sum(-1) - 1
+    below = (self.bins <= x[..., None]).astype(i32).sum(-1) - 1
     above = len(self.bins) - (
-        self.bins > x[..., None]).astype(jnp.int32).sum(-1)
+        self.bins > x[..., None]).astype(i32).sum(-1)
     below = jnp.clip(below, 0, len(self.bins) - 1)
     above = jnp.clip(above, 0, len(self.bins) - 1)
     equal = (below == above)
@@ -209,9 +283,9 @@ def balance_stats(dist, target, thres):
   # Values are NaN when there are no positives or negatives in the current
   # batch, which means they will be ignored when aggregating metrics via
   # np.nanmean() later, as they should.
-  pos = (target.astype(jnp.float32) > thres).astype(jnp.float32)
-  neg = (target.astype(jnp.float32) <= thres).astype(jnp.float32)
-  pred = (dist.mean().astype(jnp.float32) > thres).astype(jnp.float32)
+  pos = (target.astype(f32) > thres).astype(f32)
+  neg = (target.astype(f32) <= thres).astype(f32)
+  pred = (dist.mean().astype(f32) > thres).astype(f32)
   loss = -dist.log_prob(target)
   return dict(
       pos_loss=(loss * pos).sum() / pos.sum(),
@@ -219,47 +293,41 @@ def balance_stats(dist, target, thres):
       pos_acc=(pred * pos).sum() / pos.sum(),
       neg_acc=((1 - pred) * neg).sum() / neg.sum(),
       rate=pos.mean(),
-      avg=target.astype(jnp.float32).mean(),
-      pred=dist.mean().astype(jnp.float32).mean(),
+      avg=target.astype(f32).mean(),
+      pred=dist.mean().astype(f32).mean(),
   )
 
 
 class Moments(nj.Module):
 
-  def __init__(
-      self, impl='mean_std', decay=0.99, max=1e8, eps=0.0, perclo=5,
-      perchi=95):
+  rate: float = 0.01
+  limit: float = 1e-8
+  perclo: float = 5.0
+  perchi: float = 95.0
+
+  def __init__(self, impl='mean_std'):
     self.impl = impl
-    self.decay = decay
-    self.max = max
-    self.eps = eps
-    self.perclo = perclo
-    self.perchi = perchi
     if self.impl == 'off':
       pass
     elif self.impl == 'mean_std':
-      self.step = nj.Variable(jnp.zeros, (), jnp.int32, name='step')
-      self.mean = nj.Variable(jnp.zeros, (), jnp.float32, name='mean')
-      self.sqrs = nj.Variable(jnp.zeros, (), jnp.float32, name='sqrs')
+      self.mean = nj.Variable(jnp.zeros, (), f32, name='mean')
+      self.sqrs = nj.Variable(jnp.zeros, (), f32, name='sqrs')
+      self.corr = nj.Variable(jnp.zeros, (), f32, name='corr')
     elif self.impl == 'min_max':
-      self.low = nj.Variable(jnp.zeros, (), jnp.float32, name='low')
-      self.high = nj.Variable(jnp.zeros, (), jnp.float32, name='high')
-    elif self.impl == 'perc_ema':
-      self.low = nj.Variable(jnp.zeros, (), jnp.float32, name='low')
-      self.high = nj.Variable(jnp.zeros, (), jnp.float32, name='high')
-    elif self.impl == 'perc_ema_corr':
-      self.step = nj.Variable(jnp.zeros, (), jnp.int32, name='step')
-      self.low = nj.Variable(jnp.zeros, (), jnp.float32, name='low')
-      self.high = nj.Variable(jnp.zeros, (), jnp.float32, name='high')
-    elif self.impl == 'mean_mag':
-      self.mag = nj.Variable(jnp.zeros, (), jnp.float32, name='mag')
-    elif self.impl == 'max_mag':
-      self.mag = nj.Variable(jnp.zeros, (), jnp.float32, name='mag')
+      self.low = nj.Variable(jnp.zeros, (), f32, name='low')
+      self.high = nj.Variable(jnp.zeros, (), f32, name='high')
+    elif self.impl == 'perc':
+      self.low = nj.Variable(jnp.zeros, (), f32, name='low')
+      self.high = nj.Variable(jnp.zeros, (), f32, name='high')
+    elif self.impl == 'perc_corr':
+      self.low = nj.Variable(jnp.zeros, (), f32, name='low')
+      self.high = nj.Variable(jnp.zeros, (), f32, name='high')
+      self.corr = nj.Variable(jnp.zeros, (), f32, name='corr')
     else:
       raise NotImplementedError(self.impl)
 
-  def __call__(self, x):
-    self.update(x)
+  def __call__(self, x, update=True):
+    update and self.update(x)
     return self.stats()
 
   def update(self, x):
@@ -273,33 +341,27 @@ class Moments(nj.Module):
       min_ = jnp.min
       max_ = jnp.max
       per = jnp.percentile
-    x = sg(x.astype(jnp.float32))
-    m = self.decay
+    x = sg(x.astype(f32))
+    m = self.rate
     if self.impl == 'off':
       pass
     elif self.impl == 'mean_std':
-      self.step.write(self.step.read() + 1)
-      self.mean.write(m * self.mean.read() + (1 - m) * mean(x))
-      self.sqrs.write(m * self.sqrs.read() + (1 - m) * mean(x * x))
+      self.mean.write((1 - m) * self.mean.read() + m * mean(x))
+      self.sqrs.write((1 - m) * self.sqrs.read() + m * mean(x * x))
+      self.corr.write((1 - m) * self.corr.read() + m * 1.0)
     elif self.impl == 'min_max':
       low, high = min_(x), max_(x)
-      self.low.write(m * jnp.minimum(self.low.read(), low) + (1 - m) * low)
-      self.high.write(m * jnp.maximum(self.high.read(), high) + (1 - m) * high)
-    elif self.impl == 'perc_ema':
+      self.low.write((1 - m) * jnp.minimum(self.low.read(), low) + m * low)
+      self.high.write((1 - m) * jnp.maximum(self.high.read(), high) + m * high)
+    elif self.impl == 'perc':
       low, high = per(x, self.perclo), per(x, self.perchi)
-      self.low.write(m * self.low.read() + (1 - m) * low)
-      self.high.write(m * self.high.read() + (1 - m) * high)
-    elif self.impl == 'perc_ema_corr':
-      self.step.write(self.step.read() + 1)
+      self.low.write((1 - m) * self.low.read() + m * low)
+      self.high.write((1 - m) * self.high.read() + m * high)
+    elif self.impl == 'perc_corr':
       low, high = per(x, self.perclo), per(x, self.perchi)
-      self.low.write(m * self.low.read() + (1 - m) * low)
-      self.high.write(m * self.high.read() + (1 - m) * high)
-    elif self.impl == 'mean_mag':
-      curr = mean(jnp.abs(x))
-      self.mag.write(m * self.mag.read() + (1 - m) * curr)
-    elif self.impl == 'max_mag':
-      curr = max_(jnp.abs(x))
-      self.mag.write(m * jnp.maximum(self.mag.read(), curr) + (1 - m) * curr)
+      self.low.write((1 - m) * self.low.read() + m * low)
+      self.high.write((1 - m) * self.high.read() + m * high)
+      self.corr.write((1 - m) * self.corr.read() + m * 1.0)
     else:
       raise NotImplementedError(self.impl)
 
@@ -307,170 +369,389 @@ class Moments(nj.Module):
     if self.impl == 'off':
       return 0.0, 1.0
     elif self.impl == 'mean_std':
-      corr = 1 - self.decay ** self.step.read().astype(jnp.float32)
+      corr = jnp.maximum(self.rate, self.corr.read())
       mean = self.mean.read() / corr
-      var = (self.sqrs.read() / corr) - self.mean.read() ** 2
-      std = jnp.sqrt(jnp.maximum(var, 1 / self.max ** 2) + self.eps)
+      std = jnp.sqrt(jax.nn.relu(self.sqrs.read() / corr - mean ** 2))
+      std = jnp.maximum(self.limit, std)
       return sg(mean), sg(std)
     elif self.impl == 'min_max':
       offset = self.low.read()
-      invscale = jnp.maximum(1 / self.max, self.high.read() - self.low.read())
-      return sg(offset), sg(invscale)
-    elif self.impl == 'perc_ema':
+      span = self.high.read() - self.low.read()
+      span = jnp.maximum(self.limit, span)
+      return sg(offset), sg(span)
+    elif self.impl == 'perc':
       offset = self.low.read()
-      invscale = jnp.maximum(1 / self.max, self.high.read() - self.low.read())
-      return sg(offset), sg(invscale)
-    elif self.impl == 'perc_ema_corr':
-      corr = 1 - self.decay ** self.step.read().astype(jnp.float32)
+      span = self.high.read() - self.low.read()
+      span = jnp.maximum(self.limit, span)
+      return sg(offset), sg(span)
+    elif self.impl == 'perc_corr':
+      corr = jnp.maximum(self.rate, self.corr.read())
       lo = self.low.read() / corr
       hi = self.high.read() / corr
-      invscale = jnp.maximum(1 / self.max, hi - lo)
-      return sg(lo), sg(invscale)
-    elif self.impl == 'mean_mag':
-      offset = jnp.array(0)
-      invscale = jnp.maximum(1 / self.max, self.mag.read())
-      return sg(offset), sg(invscale)
-    elif self.impl == 'max_mag':
-      offset = jnp.array(0)
-      invscale = jnp.maximum(1 / self.max, self.mag.read())
-      return sg(offset), sg(invscale)
+      span = hi - lo
+      span = jnp.maximum(self.limit, span)
+      return sg(lo), sg(span)
     else:
       raise NotImplementedError(self.impl)
 
 
 class Optimizer(nj.Module):
 
-  PARAM_COUNTS = {}
+  # Normalization
+  scaler: str = 'adam'
+  eps: float = 1e-7
+  beta1: float = 0.9
+  beta2: float = 0.999
 
-  def __init__(
-      self, lr, opt='adam', eps=1e-5, clip=100.0, warmup=0, wd=0.0,
-      wd_pattern=r'/(w|kernel)$', lateclip=0.0):
-    assert opt in ('adam', 'belief', 'yogi')
-    assert wd_pattern[0] not in ('0', '1')
-    # assert self.path not in self.PARAM_COUNTS
-    self.PARAM_COUNTS[self.path] = None
-    wd_pattern = re.compile(wd_pattern)
+  # Learning rate
+  warmup: int = 1000
+  anneal: int = 0
+  schedule: str = 'constant'
+
+  # Regularization
+  wd: float = 0.0
+  wd_pattern: str = r'/kernel$'
+
+  # Clipping
+  pmin: float = 1e-3
+  globclip: float = 0.0
+  agc: float = 0.0
+
+  # Smoothing
+  momentum: bool = False
+  nesterov: bool = False
+
+  # Metrics
+  details: bool = False
+
+  def __init__(self, lr):
+    self.lr = lr
     chain = []
-    if clip:
-      chain.append(optax.clip_by_global_norm(clip))
-    if opt == 'adam':
-      chain.append(optax.scale_by_adam(eps=eps))
+
+    if self.globclip:
+      chain.append(optax.clip_by_global_norm(self.globclip))
+    if self.agc:
+      chain.append(scale_by_agc(self.agc, self.pmin))
+
+    if self.scaler == 'adam':
+      chain.append(optax.scale_by_adam(self.beta1, self.beta2, self.eps))
+    elif self.scaler == 'rms':
+      chain.append(scale_by_rms(self.beta2, self.eps))
     else:
-      raise NotImplementedError(opt)
-    if lateclip:
-      chain.append(late_grad_clip(lateclip))
-    if wd:
-      chain.append(optax.additive_weight_decay(wd, lambda params: (
-          tree_map(lambda k: bool(wd_pattern.search(k)), tree_keys(params)))))
-    if warmup:
-      schedule = optax.linear_schedule(0.0, -lr, warmup)
-      chain.append(optax.inject_hyperparams(optax.scale)(schedule))
+      raise NotImplementedError(self.scaler)
+
+    if self.momentum:
+      chain.append(scale_by_momentum(self.beta1, self.nesterov))
+
+    if self.wd:
+      assert not self.wd_pattern[0].isnumeric(), self.wd_pattern
+      pattern = re.compile(self.wd_pattern)
+      wdmaskfn = lambda params: {k: bool(pattern.search(k)) for k in params}
+      chain.append(optax.add_decayed_weights(self.wd, wdmaskfn))
+
+    if isinstance(self.lr, dict):
+      chain.append(scale_by_groups({pfx: -lr for pfx, lr in self.lr.items()}))
     else:
-      chain.append(optax.scale(-lr))
-    self.opt = optax.chain(*chain)
-    self.step = nj.Variable(jnp.array, 0, jnp.int32, name='step')
+      chain.append(optax.scale(-self.lr))
+
+    self.chain = optax.chain(*chain)
+    self.step = nj.Variable(jnp.array, 0, i32, name='step')
     self.scaling = (COMPUTE_DTYPE == jnp.float16)
     if self.scaling:
-      self.opt = optax.apply_if_finite(self.opt, max_consecutive_errors=1000)
-      self.grad_scale = nj.Variable(
-          jnp.array, 1e4, jnp.float32, name='grad_scale')
-      self.good_steps = nj.Variable(
-          jnp.array, 0, jnp.int32, name='good_steps')
+      self.chain = optax.apply_if_finite(
+          self.chain, max_consecutive_errors=1000)
+      self.grad_scale = nj.Variable(jnp.array, 1e4, f32, name='grad_scale')
+      self.good_steps = nj.Variable(jnp.array, 0, i32, name='good_steps')
+    self.once = True
 
   def __call__(self, modules, lossfn, *args, has_aux=False, **kwargs):
     def wrapped(*args, **kwargs):
       outs = lossfn(*args, **kwargs)
       loss, aux = outs if has_aux else (outs, None)
-      assert loss.dtype == jnp.float32, (self.name, loss.dtype)
+      assert loss.dtype == f32, (self.name, loss.dtype)
       assert loss.shape == (), (self.name, loss.shape)
       if self.scaling:
         loss *= sg(self.grad_scale.read())
       return loss, aux
+
     metrics = {}
     loss, params, grads, aux = nj.grad(
         wrapped, modules, has_aux=True)(*args, **kwargs)
-    if not self.PARAM_COUNTS[self.path]:
-      count = sum([np.prod(x.shape) for x in params.values()])
-      print(f'Optimizer {self.name} has {count:,} variables.')
-      self.PARAM_COUNTS[self.path] = count
+    if self.scaling:
+      loss /= self.grad_scale.read()
+    if not isinstance(modules, (list, tuple)):
+      modules = [modules]
+    counts = {k: int(np.prod(v.shape)) for k, v in params.items()}
+    if self.once:
+      self.once = False
+      prefs = []
+      for key in counts:
+        parts = key.split('/')
+        prefs += ['/'.join(parts[: i + 1]) for i in range(min(len(parts), 2))]
+      subcounts = {
+          prefix: sum(v for k, v in counts.items() if k.startswith(prefix))
+          for prefix in set(prefs)}
+      print(f'Optimizer {self.name} has {sum(counts.values()):,} variables:')
+      for prefix, count in sorted(subcounts.items(), key=lambda x: -x[1]):
+        print(f'{count:>14,} {prefix}')
+
     if parallel():
-      grads = tree_map(lambda x: jax.lax.pmean(x, 'i'), grads)
+      grads = treemap(lambda x: jax.lax.pmean(x, 'i'), grads)
     if self.scaling:
-      grads = tree_map(lambda x: x / self.grad_scale.read(), grads)
-      finite = self._update_scale(grads)
-      metrics[f'{self.name}_grad_scale'] = self.grad_scale.read()
-      metrics[f'{self.name}_grad_overflow'] = (~finite).astype(jnp.float32)
-    optstate = self.get('state', self.opt.init, params)
-    updates, optstate = self.opt.update(grads, optstate, params)
+      invscale = 1.0 / self.grad_scale.read()
+      grads = treemap(lambda x: x * invscale, grads)
+    optstate = self.get('state', self.chain.init, params)
+    updates, optstate = self.chain.update(grads, optstate, params)
     self.put('state', optstate)
+
+    if self.details:
+      metrics.update(self._detailed_stats(optstate, params, updates))
+
+    scale = 1
+    step = self.step.read().astype(f32)
+    if self.warmup > 0:
+      scale *= jnp.clip(step / self.warmup, 0, 1)
+    assert self.schedule == 'constant' or self.anneal > self.warmup
+    prog = jnp.clip((step - self.warmup) / (self.anneal - self.warmup), 0, 1)
+    if self.schedule == 'constant':
+      pass
+    elif self.schedule == 'linear':
+      scale *= 1 - prog
+    elif self.schedule == 'cosine':
+      scale *= 0.5 * (1 + jnp.cos(jnp.pi * prog))
+    else:
+      raise NotImplementedError(self.schedule)
+    updates = treemap(lambda x: x * scale, updates)
+
     nj.context().update(optax.apply_updates(params, updates))
-    norm = optax.global_norm(grads)
+    grad_norm = optax.global_norm(grads)
+    update_norm = optax.global_norm(updates)
+    param_norm = optax.global_norm([x.find() for x in modules])
+    isfin = jnp.isfinite
     if self.scaling:
-      norm = jnp.where(jnp.isfinite(norm), norm, jnp.nan)
-    self.step.write(self.step.read() + jnp.isfinite(norm).astype(jnp.int32))
+      self._update_scale(grads, jnp.isfinite(grad_norm))
+      metrics['grad_scale'] = self.grad_scale.read()
+      metrics['grad_overflow'] = (~jnp.isfinite(grad_norm)).astype(f32)
+      grad_norm = jnp.where(jnp.isfinite(grad_norm), grad_norm, jnp.nan)
+      self.step.write(self.step.read() + isfin(grad_norm).astype(i32))
+    else:
+      check(isfin(grad_norm), f'{self.path} grad norm: {{x}}', x=grad_norm)
+      self.step.write(self.step.read() + 1)
+    check(isfin(update_norm), f'{self.path} updates: {{x}}', x=update_norm)
+    check(isfin(param_norm), f'{self.path} params: {{x}}', x=param_norm)
+
     metrics['loss'] = loss.mean()
-    metrics['grad_norm'] = norm
+    metrics['grad_norm'] = grad_norm
+    metrics['update_norm'] = update_norm
+    metrics['param_norm'] = param_norm
     metrics['grad_steps'] = self.step.read()
+    metrics['param_count'] = jnp.array(sum(counts.values()))
     metrics = {f'{self.name}_{k}': v for k, v in metrics.items()}
     return (metrics, aux) if has_aux else metrics
 
-  def _update_scale(self, grads):
-    finite = jnp.array([
-        jnp.isfinite(x).all() for x in jax.tree_util.tree_leaves(grads)]).all()
+  def _update_scale(self, grads, finite):
     keep = (finite & (self.good_steps.read() < 1000))
     incr = (finite & (self.good_steps.read() >= 1000))
     decr = ~finite
     self.good_steps.write(
-        keep.astype(jnp.int32) * (self.good_steps.read() + 1))
+        keep.astype(i32) * (self.good_steps.read() + 1))
     self.grad_scale.write(jnp.clip(
-        keep.astype(jnp.float32) * self.grad_scale.read() +
-        incr.astype(jnp.float32) * self.grad_scale.read() * 2 +
-        decr.astype(jnp.float32) * self.grad_scale.read() / 2,
-        1e-4, 1e4))
+        keep.astype(f32) * self.grad_scale.read() +
+        incr.astype(f32) * self.grad_scale.read() * 2 +
+        decr.astype(f32) * self.grad_scale.read() / 2,
+        1e-4, 1e5))
     return finite
 
+  def _detailed_stats(self, optstate, params, updates):
+    groups = {
+        'all': r'.*',
+        'enc': r'/enc/.*/kernel$',
+        'dec': r'/dec/.*/kernel$',
+        'rssm': r'/rssm/.*/kernel$',
+        'cont': r'/cont/.*/kernel$',
+        'rew': r'/rew/.*/kernel$',
+        'actor': r'/actor/.*/kernel$',
+        'critic': r'/critic/.*/kernel$',
+        'gru': r'/gru/kernel$',
+        'bias': r'/bias$',
+        'out': r'/out/kernel$',
+        'repr': r'/repr_logit/kernel$',
+        'prior': r'/prior_logit/kernel$',
+        'offset': r'/offset$',
+        'scale': r'/scale$',
+    }
+    metrics = {}
+    stddev = None
+    for state in getattr(optstate, 'inner_state', optstate):
+      if isinstance(state, optax.ScaleByAdamState):
+        corr = 1 / (1 - 0.999 ** state.count)
+        stddev = treemap(lambda x: jnp.sqrt(x * corr), state.nu)
+    for name, pattern in groups.items():
+      keys = [k for k in params if re.search(pattern, k)]
+      ps = [params[k] for k in keys]
+      us = [updates[k] for k in keys]
+      if not ps:
+        continue
+      metrics.update({f'{k}/{name}': v for k, v in dict(
+          param_abs_max=jnp.stack([jnp.abs(x).max() for x in ps]).max(),
+          param_abs_mean=jnp.stack([jnp.abs(x).mean() for x in ps]).mean(),
+          param_norm=optax.global_norm(ps),
+          update_abs_max=jnp.stack([jnp.abs(x).max() for x in us]).max(),
+          update_abs_mean=jnp.stack([jnp.abs(x).mean() for x in us]).mean(),
+          update_norm=optax.global_norm(us),
+      ).items()})
+      if stddev is not None:
+        sc = [stddev[k] for k in keys]
+        pr = [
+            jnp.abs(x) / jnp.maximum(1e-3, jnp.abs(y)) for x, y in zip(us, ps)]
+        metrics.update({f'{k}/{name}': v for k, v in dict(
+            scale_abs_max=jnp.stack([jnp.abs(x).max() for x in sc]).max(),
+            scale_abs_min=jnp.stack([jnp.abs(x).min() for x in sc]).min(),
+            scale_abs_mean=jnp.stack([jnp.abs(x).mean() for x in sc]).mean(),
+            prop_max=jnp.stack([x.max() for x in pr]).max(),
+            prop_min=jnp.stack([x.min() for x in pr]).min(),
+            prop_mean=jnp.stack([x.mean() for x in pr]).mean(),
+      ).items()})
+    return metrics
 
-def late_grad_clip(value=1.0):
+
+def expand_groups(groups, keys):
+  if isinstance(groups, (float, int)):
+    return {key: groups for key in keys}
+  groups = {
+      group if group.endswith('/') else f'{group}/': value
+      for group, value in groups.items()}
+  assignment = {}
+  groupcount = collections.defaultdict(int)
+  for key in keys:
+    matches = [prefix for prefix in groups if key.startswith(prefix)]
+    if not matches:
+      raise ValueError(
+          f'Parameter {key} not fall into any of the groups:\n' +
+          ''.join(f'- {group}\n' for group in groups.keys()))
+    if len(matches) > 1:
+      raise ValueError(
+          f'Parameter {key} fall into more than one of the groups:\n' +
+          ''.join(f'- {group}\n' for group in groups.keys()))
+    assignment[key] = matches[0]
+    groupcount[matches[0]] += 1
+  for group in groups.keys():
+    if not groupcount[group]:
+      raise ValueError(
+          f'Group {group} did not match any of the {len(keys)} keys.')
+  expanded = {key: groups[assignment[key]] for key in keys}
+  return expanded
+
+
+def scale_by_groups(groups):
+
   def init_fn(params):
     return ()
-  def update_fn(updates, state, params):
-    updates = tree_map(lambda x: jnp.clip(x, -value, value), updates)
-    return updates, ()
+
+  def update_fn(updates, state, params=None):
+    scales = expand_groups(groups, updates.keys())
+    updates = treemap(lambda u, s: u * s, updates, scales)
+    return updates, state
+
   return optax.GradientTransformation(init_fn, update_fn)
 
 
-def tree_keys(params, prefix=''):
-  if hasattr(params, 'items'):
-    return type(params)({
-        k: tree_keys(v, prefix + '/' + k.lstrip('/'))
-        for k, v in params.items()})
-  elif isinstance(params, (tuple, list)):
-    return [tree_keys(x, prefix) for x in params]
-  elif isinstance(params, jnp.ndarray):
-    return prefix
-  else:
-    raise TypeError(type(params))
+def scale_by_agc(clip=0.03, pmin=1e-3):
+
+  def init_fn(params):
+    return ()
+
+  def update_fn(updates, state, params=None):
+    def fn(param, update):
+      unorm = jnp.linalg.norm(update.flatten(), 2)
+      pnorm = jnp.linalg.norm(param.flatten(), 2)
+      upper = clip * jnp.maximum(pmin, pnorm)
+      return update * (1 / jnp.maximum(1.0, unorm / upper))
+    updates = treemap(fn, params, updates)
+    return updates, ()
+
+  return optax.GradientTransformation(init_fn, update_fn)
 
 
-class SlowUpdater:
+def scale_by_rms(beta=0.999, eps=1e-8):
+
+  def init_fn(params):
+    nu = treemap(lambda t: jnp.zeros_like(t, f32), params)
+    step = jnp.zeros((), i32)
+    return (step, nu)
+
+  def update_fn(updates, state, params=None):
+    step, nu = state
+    step = optax.safe_int32_increment(step)
+    nu = treemap(lambda v, u: beta * v + (1 - beta) * (u * u), nu, updates)
+    nu_hat = optax.bias_correction(nu, beta, step)
+    updates = treemap(lambda u, v: u / (jnp.sqrt(v) + eps), updates, nu_hat)
+    return updates, (step, nu)
+
+  return optax.GradientTransformation(init_fn, update_fn)
+
+
+def scale_by_momentum(beta=0.9, nesterov=False):
+
+  def init_fn(params):
+    mu = treemap(lambda t: jnp.zeros_like(t, f32), params)
+    step = jnp.zeros((), i32)
+    return (step, mu)
+
+  def update_fn(updates, state, params=None):
+    step, mu = state
+    step = optax.safe_int32_increment(step)
+    mu = optax.update_moment(updates, mu, beta, 1)
+    if nesterov:
+      mu_nesterov = optax.update_moment(updates, mu, beta, 1)
+      mu_hat = optax.bias_correction(mu_nesterov, beta, step)
+    else:
+      mu_hat = optax.bias_correction(mu, beta, step)
+    return mu_hat, (step, mu)
+
+  return optax.GradientTransformation(init_fn, update_fn)
+
+
+def concat_dict(mapping, batch_shape=None):
+  tensors = [v for _, v in sorted(mapping.items(), key=lambda x: x[0])]
+  if batch_shape is not None:
+    tensors = [x.reshape((*batch_shape, -1)) for x in tensors]
+  return jnp.concatenate(tensors, -1)
+
+
+def onehot_dict(mapping, spaces):
+  result = {}
+  for key, value in mapping.items():
+    space = spaces[key]
+    if space.discrete:
+      value = jax.nn.one_hot(value, space.classes)
+    result[key] = value
+  return result
+
+
+class SlowUpdater(nj.Module):
 
   def __init__(self, src, dst, fraction=1.0, period=1):
     self.src = src
     self.dst = dst
     self.fraction = fraction
     self.period = period
-    self.updates = nj.Variable(jnp.zeros, (), jnp.int32, name='updates')
+    self.updates = nj.Variable(jnp.zeros, (), i32, name='updates')
 
   def __call__(self):
-    assert self.src.getm()
+    assert self.src.find()
     updates = self.updates.read()
-    need_init = (updates == 0).astype(jnp.float32)
-    need_update = (updates % self.period == 0).astype(jnp.float32)
+    need_init = (updates == 0).astype(f32)
+    need_update = (updates % self.period == 0).astype(f32)
     mix = jnp.clip(1.0 * need_init + self.fraction * need_update, 0, 1)
-    source = {
+    params = {
         k.replace(f'/{self.src.name}/', f'/{self.dst.name}/'): v
-        for k, v in self.src.getm().items()}
-    self.dst.putm(tree_map(
+        for k, v in self.src.find().items()}
+    ema = treemap(
         lambda s, d: mix * s + (1 - mix) * d,
-        source, self.dst.getm()))
+        params, self.dst.find())
+    for name, param in ema.items():
+      assert param.dtype == jnp.float32, (
+          f'EMA of {name} should be float32 not {param.dtype}')
+    self.dst.put(ema)
     self.updates.write(updates + 1)

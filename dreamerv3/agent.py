@@ -1,22 +1,24 @@
+import re
+from functools import partial as bind
+
 import embodied
 import jax
 import jax.numpy as jnp
+import numpy as np
+import optax
 import ruamel.yaml as yaml
-tree_map = jax.tree_util.tree_map
-sg = lambda x: tree_map(jax.lax.stop_gradient, x)
 
-import logging
-logger = logging.getLogger()
-class CheckTypesFilter(logging.Filter):
-  def filter(self, record):
-    return 'check_types' not in record.getMessage()
-logger.addFilter(CheckTypesFilter())
-
-from . import behaviors
 from . import jaxagent
 from . import jaxutils
 from . import nets
 from . import ninjax as nj
+
+f32 = jnp.float32
+treemap = jax.tree_util.tree_map
+sg = lambda x: treemap(jax.lax.stop_gradient, x)
+cast = jaxutils.cast_to_compute
+sample = lambda dist: {
+    k: v.sample(seed=nj.seed()) for k, v in dist.items()}
 
 
 @jaxagent.Wrapper
@@ -25,347 +27,449 @@ class Agent(nj.Module):
   configs = yaml.YAML(typ='safe').load(
       (embodied.Path(__file__).parent / 'configs.yaml').read())
 
-  def __init__(self, obs_space, act_space, step, config):
-    self.config = config
-    self.obs_space = obs_space
-    self.act_space = act_space['action']
-    self.step = step
-    self.wm = WorldModel(obs_space, act_space, config, name='wm')
-    self.task_behavior = getattr(behaviors, config.task_behavior)(
-        self.wm, self.act_space, self.config, name='task_behavior')
-    if config.expl_behavior == 'None':
-      self.expl_behavior = self.task_behavior
-    else:
-      self.expl_behavior = getattr(behaviors, config.expl_behavior)(
-          self.wm, self.act_space, self.config, name='expl_behavior')
-
-  def policy_initial(self, batch_size):
-    return (
-        self.wm.initial(batch_size),
-        self.task_behavior.initial(batch_size),
-        self.expl_behavior.initial(batch_size))
-
-  def train_initial(self, batch_size):
-    return self.wm.initial(batch_size)
-
-  def policy(self, obs, state, mode='train'):
-    self.config.jax.jit and print('Tracing policy function.')
-    obs = self.preprocess(obs)
-    (prev_latent, prev_action), task_state, expl_state = state
-    embed = self.wm.encoder(obs)
-    latent, _ = self.wm.rssm.obs_step(
-        prev_latent, prev_action, embed, obs['is_first'])
-    self.expl_behavior.policy(latent, expl_state)
-    task_outs, task_state = self.task_behavior.policy(latent, task_state)
-    expl_outs, expl_state = self.expl_behavior.policy(latent, expl_state)
-    if mode == 'eval':
-      outs = task_outs
-      outs['action'] = outs['action'].sample(seed=nj.rng())
-      outs['log_entropy'] = jnp.zeros(outs['action'].shape[:1])
-    elif mode == 'explore':
-      outs = expl_outs
-      outs['log_entropy'] = outs['action'].entropy()
-      outs['action'] = outs['action'].sample(seed=nj.rng())
-    elif mode == 'train':
-      outs = task_outs
-      outs['log_entropy'] = outs['action'].entropy()
-      outs['action'] = outs['action'].sample(seed=nj.rng())
-    state = ((latent, outs['action']), task_state, expl_state)
-    return outs, state
-
-  def train(self, data, state):
-    self.config.jax.jit and print('Tracing train function.')
-    metrics = {}
-    data = self.preprocess(data)
-    state, wm_outs, mets = self.wm.train(data, state)
-    metrics.update(mets)
-    context = {**data, **wm_outs['post']}
-    start = tree_map(lambda x: x.reshape([-1] + list(x.shape[2:])), context)
-    _, mets = self.task_behavior.train(self.wm.imagine, start, context)
-    metrics.update(mets)
-    if self.config.expl_behavior != 'None':
-      _, mets = self.expl_behavior.train(self.wm.imagine, start, context)
-      metrics.update({'expl_' + key: value for key, value in mets.items()})
-    outs = {}
-    return outs, state, metrics
-
-  def report(self, data):
-    self.config.jax.jit and print('Tracing report function.')
-    data = self.preprocess(data)
-    report = {}
-    report.update(self.wm.report(data))
-    mets = self.task_behavior.report(data)
-    report.update({f'task_{k}': v for k, v in mets.items()})
-    if self.expl_behavior is not self.task_behavior:
-      mets = self.expl_behavior.report(data)
-      report.update({f'expl_{k}': v for k, v in mets.items()})
-    return report
-
-  def preprocess(self, obs):
-    obs = obs.copy()
-    for key, value in obs.items():
-      if key.startswith('log_') or key in ('key',):
-        continue
-      if len(value.shape) > 3 and value.dtype == jnp.uint8:
-        value = jaxutils.cast_to_compute(value) / 255.0
-      else:
-        value = value.astype(jnp.float32)
-      obs[key] = value
-    obs['cont'] = 1.0 - obs['is_terminal'].astype(jnp.float32)
-    return obs
-
-
-class WorldModel(nj.Module):
-
   def __init__(self, obs_space, act_space, config):
-    self.obs_space = obs_space
-    self.act_space = act_space['action']
+    self.obs_space = {
+        k: v for k, v in obs_space.items() if not k.startswith('log_')}
+    self.act_space = {
+        k: v for k, v in act_space.items() if k != 'reset'}
     self.config = config
-    shapes = {k: tuple(v.shape) for k, v in obs_space.items()}
-    shapes = {k: v for k, v in shapes.items() if not k.startswith('log_')}
-    self.encoder = nets.MultiEncoder(shapes, **config.encoder, name='enc')
-    self.rssm = nets.RSSM(**config.rssm, name='rssm')
-    self.heads = {
-        'decoder': nets.MultiDecoder(shapes, **config.decoder, name='dec'),
-        'reward': nets.MLP((), **config.reward_head, name='rew'),
-        'cont': nets.MLP((), **config.cont_head, name='cont')}
-    self.opt = jaxutils.Optimizer(name='model_opt', **config.model_opt)
-    scales = self.config.loss_scales.copy()
-    image, vector = scales.pop('image'), scales.pop('vector')
-    scales.update({k: image for k in self.heads['decoder'].cnn_shapes})
-    scales.update({k: vector for k in self.heads['decoder'].mlp_shapes})
-    self.scales = scales
+    enc_space = {
+        k: v for k, v in obs_space.items()
+        if k not in ('is_first', 'is_last', 'is_terminal', 'reward') and
+        not k.startswith('log_') and re.match(config.enc.spaces, k)}
+    dec_space = {
+        k: v for k, v in obs_space.items()
+        if k not in ('is_first', 'is_last', 'is_terminal', 'reward') and
+        not k.startswith('log_') and re.match(config.dec.spaces, k)}
+    embodied.print('Encoder:', {k: v.shape for k, v in enc_space.items()})
+    embodied.print('Decoder:', {k: v.shape for k, v in dec_space.items()})
+    # nets.Initializer.VARIANCE_FACTOR = self.config.init_scale
+    nets.Initializer.FORCE_STDDEV = self.config.winit_scale
 
-  def initial(self, batch_size):
-    prev_latent = self.rssm.initial(batch_size)
-    prev_action = jnp.zeros((batch_size, *self.act_space.shape))
-    return prev_latent, prev_action
+    # World Model
+    self.enc = {
+        'simple': bind(nets.SimpleEncoder, **config.enc.simple),
+    }[config.enc.typ](enc_space, name='enc')
+    self.dec = {
+        'simple': bind(nets.SimpleDecoder, **config.dec.simple),
+    }[config.dec.typ](dec_space, name='dec')
+    self.dyn = {
+        'rssm': bind(nets.RSSM, **config.dyn.rssm),
+    }[config.dyn.typ](name='dyn')
+    self.rew = nets.MLP((), **config.rewhead, name='rew')
+    self.con = nets.MLP((), **config.conhead, name='con')
 
-  def train(self, data, state):
-    modules = [self.encoder, self.rssm, *self.heads.values()]
-    mets, (state, outs, metrics) = self.opt(
-        modules, self.loss, data, state, has_aux=True)
-    metrics.update(mets)
-    return state, outs, metrics
+    # Actor
+    kwargs = {}
+    kwargs['shape'] = {
+        k: (*s.shape, s.classes) if s.discrete else s.shape
+        for k, s in self.act_space.items()}
+    kwargs['dist'] = {
+        k: config.actor_dist_disc if v.discrete else config.actor_dist_cont
+        for k, v in self.act_space.items()}
+    self.actor = nets.MLP(**kwargs, **config.actor, name='actor')
+    self.retnorm = jaxutils.Moments(**config.retnorm, name='retnorm')
+    self.valnorm = jaxutils.Moments(**config.valnorm, name='valnorm')
+    self.advnorm = jaxutils.Moments(**config.advnorm, name='advnorm')
 
-  def loss(self, data, state):
-    embed = self.encoder(data)
-    prev_latent, prev_action = state
-    prev_actions = jnp.concatenate([
-        prev_action[:, None], data['action'][:, :-1]], 1)
-    post, prior = self.rssm.observe(
-        embed, prev_actions, data['is_first'], prev_latent)
-    dists = {}
-    feats = {**post, 'embed': embed}
-    for name, head in self.heads.items():
-      out = head(feats if name in self.config.grad_heads else sg(feats))
-      out = out if isinstance(out, dict) else {name: out}
-      dists.update(out)
-    losses = {}
-    losses['dyn'] = self.rssm.dyn_loss(post, prior, **self.config.dyn_loss)
-    losses['rep'] = self.rssm.rep_loss(post, prior, **self.config.rep_loss)
-    for key, dist in dists.items():
-      loss = -dist.log_prob(data[key].astype(jnp.float32))
-      assert loss.shape == embed.shape[:2], (key, loss.shape)
-      losses[key] = loss
-    scaled = {k: v * self.scales[k] for k, v in losses.items()}
-    model_loss = sum(scaled.values())
-    out = {'embed':  embed, 'post': post, 'prior': prior}
-    out.update({f'{k}_loss': v for k, v in losses.items()})
-    last_latent = {k: v[:, -1] for k, v in post.items()}
-    last_action = data['action'][:, -1]
-    state = last_latent, last_action
-    metrics = self._metrics(data, dists, post, prior, losses, model_loss)
-    return model_loss.mean(), (state, out, metrics)
-
-  def imagine(self, policy, start, horizon):
-    first_cont = (1.0 - start['is_terminal']).astype(jnp.float32)
-    keys = list(self.rssm.initial(1).keys())
-    start = {k: v for k, v in start.items() if k in keys}
-    start['action'] = policy(start)
-    def step(prev, _):
-      prev = prev.copy()
-      state = self.rssm.img_step(prev, prev.pop('action'))
-      return {**state, 'action': policy(state)}
-    traj = jaxutils.scan(
-        step, jnp.arange(horizon), start, self.config.imag_unroll)
-    traj = {
-        k: jnp.concatenate([start[k][None], v], 0) for k, v in traj.items()}
-    cont = self.heads['cont'](traj).mode()
-    traj['cont'] = jnp.concatenate([first_cont[None], cont[1:]], 0)
-    discount = 1 - 1 / self.config.horizon
-    traj['weight'] = jnp.cumprod(discount * traj['cont'], 0) / discount
-    return traj
-
-  def report(self, data):
-    state = self.initial(len(data['is_first']))
-    report = {}
-    report.update(self.loss(data, state)[-1][-1])
-    context, _ = self.rssm.observe(
-        self.encoder(data)[:6, :5], data['action'][:6, :5],
-        data['is_first'][:6, :5])
-    start = {k: v[:, -1] for k, v in context.items()}
-    recon = self.heads['decoder'](context)
-    openl = self.heads['decoder'](
-        self.rssm.imagine(data['action'][:6, 5:], start))
-    for key in self.heads['decoder'].cnn_shapes.keys():
-      truth = data[key][:6].astype(jnp.float32)
-      model = jnp.concatenate([recon[key].mode()[:, :5], openl[key].mode()], 1)
-      error = (model - truth + 1) / 2
-      video = jnp.concatenate([truth, model, error], 2)
-      report[f'openl_{key}'] = jaxutils.video_grid(video)
-    return report
-
-  def _metrics(self, data, dists, post, prior, losses, model_loss):
-    entropy = lambda feat: self.rssm.get_dist(feat).entropy()
-    metrics = {}
-    metrics.update(jaxutils.tensorstats(entropy(prior), 'prior_ent'))
-    metrics.update(jaxutils.tensorstats(entropy(post), 'post_ent'))
-    metrics.update({f'{k}_loss_mean': v.mean() for k, v in losses.items()})
-    metrics.update({f'{k}_loss_std': v.std() for k, v in losses.items()})
-    metrics['model_loss_mean'] = model_loss.mean()
-    metrics['model_loss_std'] = model_loss.std()
-    metrics['reward_max_data'] = jnp.abs(data['reward']).max()
-    metrics['reward_max_pred'] = jnp.abs(dists['reward'].mean()).max()
-    if 'reward' in dists and not self.config.jax.debug_nans:
-      stats = jaxutils.balance_stats(dists['reward'], data['reward'], 0.1)
-      metrics.update({f'reward_{k}': v for k, v in stats.items()})
-    if 'cont' in dists and not self.config.jax.debug_nans:
-      stats = jaxutils.balance_stats(dists['cont'], data['cont'], 0.5)
-      metrics.update({f'cont_{k}': v for k, v in stats.items()})
-    return metrics
-
-
-class ImagActorCritic(nj.Module):
-
-  def __init__(self, critics, scales, act_space, config):
-    critics = {k: v for k, v in critics.items() if scales[k]}
-    for key, scale in scales.items():
-      assert not scale or key in critics, key
-    self.critics = {k: v for k, v in critics.items() if scales[k]}
-    self.scales = scales
-    self.act_space = act_space
-    self.config = config
-    disc = act_space.discrete
-    self.grad = config.actor_grad_disc if disc else config.actor_grad_cont
-    self.actor = nets.MLP(
-        name='actor', dims='deter', shape=act_space.shape, **config.actor,
-        dist=config.actor_dist_disc if disc else config.actor_dist_cont)
-    self.retnorms = {
-        k: jaxutils.Moments(**config.retnorm, name=f'retnorm_{k}')
-        for k in critics}
-    self.opt = jaxutils.Optimizer(name='actor_opt', **config.actor_opt)
-
-  def initial(self, batch_size):
-    return {}
-
-  def policy(self, state, carry):
-    return {'action': self.actor(state)}, carry
-
-  def train(self, imagine, start, context):
-    def loss(start):
-      policy = lambda s: self.actor(sg(s)).sample(seed=nj.rng())
-      traj = imagine(policy, start, self.config.imag_horizon)
-      loss, metrics = self.loss(traj)
-      return loss, (traj, metrics)
-    mets, (traj, metrics) = self.opt(self.actor, loss, start, has_aux=True)
-    metrics.update(mets)
-    for key, critic in self.critics.items():
-      mets = critic.train(traj, self.actor)
-      metrics.update({f'{key}_critic_{k}': v for k, v in mets.items()})
-    return traj, metrics
-
-  def loss(self, traj):
-    metrics = {}
-    advs = []
-    total = sum(self.scales[k] for k in self.critics)
-    for key, critic in self.critics.items():
-      rew, ret, base = critic.score(traj, self.actor)
-      offset, invscale = self.retnorms[key](ret)
-      normed_ret = (ret - offset) / invscale
-      normed_base = (base - offset) / invscale
-      advs.append((normed_ret - normed_base) * self.scales[key] / total)
-      metrics.update(jaxutils.tensorstats(rew, f'{key}_reward'))
-      metrics.update(jaxutils.tensorstats(ret, f'{key}_return_raw'))
-      metrics.update(jaxutils.tensorstats(normed_ret, f'{key}_return_normed'))
-      metrics[f'{key}_return_rate'] = (jnp.abs(ret) >= 0.5).mean()
-    adv = jnp.stack(advs).sum(0)
-    policy = self.actor(sg(traj))
-    logpi = policy.log_prob(sg(traj['action']))[:-1]
-    loss = {'backprop': -adv, 'reinforce': -logpi * sg(adv)}[self.grad]
-    ent = policy.entropy()[:-1]
-    loss -= self.config.actent * ent
-    loss *= sg(traj['weight'])[:-1]
-    loss *= self.config.loss_scales.actor
-    metrics.update(self._metrics(traj, policy, logpi, ent, adv))
-    return loss.mean(), metrics
-
-  def _metrics(self, traj, policy, logpi, ent, adv):
-    metrics = {}
-    ent = policy.entropy()[:-1]
-    rand = (ent - policy.minent) / (policy.maxent - policy.minent)
-    rand = rand.mean(range(2, len(rand.shape)))
-    act = traj['action']
-    act = jnp.argmax(act, -1) if self.act_space.discrete else act
-    metrics.update(jaxutils.tensorstats(act, 'action'))
-    metrics.update(jaxutils.tensorstats(rand, 'policy_randomness'))
-    metrics.update(jaxutils.tensorstats(ent, 'policy_entropy'))
-    metrics.update(jaxutils.tensorstats(logpi, 'policy_logprob'))
-    metrics.update(jaxutils.tensorstats(adv, 'adv'))
-    metrics['imag_weight_dist'] = jaxutils.subsample(traj['weight'])
-    return metrics
-
-
-class VFunction(nj.Module):
-
-  def __init__(self, rewfn, config):
-    self.rewfn = rewfn
-    self.config = config
-    self.net = nets.MLP((), name='net', dims='deter', **self.config.critic)
-    self.slow = nets.MLP((), name='slow', dims='deter', **self.config.critic)
+    # Critic
+    self.critic = nets.MLP((), name='critic', **self.config.critic)
+    self.slowcritic = nets.MLP(
+        (), name='slowcritic', **self.config.critic, dtype='float32')
     self.updater = jaxutils.SlowUpdater(
-        self.net, self.slow,
+        self.critic, self.slowcritic,
         self.config.slow_critic_fraction,
-        self.config.slow_critic_update)
-    self.opt = jaxutils.Optimizer(name='critic_opt', **self.config.critic_opt)
+        self.config.slow_critic_update,
+        name='updater')
 
-  def train(self, traj, actor):
-    target = sg(self.score(traj)[1])
-    mets, metrics = self.opt(self.net, self.loss, traj, target, has_aux=True)
+    # Optimizer
+    kw = dict(config.opt)
+    lr = kw.pop('lr')
+    if config.compute_lr:
+      assert not config.separate_lrs
+      width = float(config.actor.units)
+      replay = float(config.run.train_ratio)
+      a = config.compute_lr_params.lnwidth
+      b = config.compute_lr_params.lnreplay
+      c = config.compute_lr_params.bias
+      lr = np.exp(a * np.log(width) + b * np.log(replay) + c)
+      message = f'Computed LR (width={width}, replay={replay}): {lr:.1e}'
+      embodied.print(message)
+    if config.separate_lrs:
+      lr = {f'agent/{k}': v for k, v in config.lrs.items()}
+    self.opt = jaxutils.Optimizer(lr, **kw, name='opt')
+    self.modules = [
+        self.enc, self.dyn, self.dec, self.rew, self.con,
+        self.actor, self.critic]
+    scales = self.config.loss_scales.copy()
+    cnn = scales.pop('dec_cnn')
+    mlp = scales.pop('dec_mlp')
+    scales.update({k: cnn for k in self.dec.imgkeys})
+    scales.update({k: mlp for k in self.dec.veckeys})
+    self.scales = scales
+
+  @property
+  def policy_keys(self):
+    return '/(enc|dyn|actor)/'
+
+  @property
+  def aux_spaces(self):
+    import numpy as np
+    spaces = {}
+    spaces['stepid'] = embodied.Space(np.uint8, 20)
+    if self.config.replay_context:
+      latshape = (self.config.dyn.rssm.stoch, self.config.dyn.rssm.classes)
+      latdtype = jaxutils.COMPUTE_DTYPE
+      latdtype = np.float32 if latdtype == jnp.bfloat16 else latdtype
+      if self.config.dyn.typ == 'rssm':
+        spaces['deter'] = embodied.Space(latdtype, self.config.dyn.rssm.deter)
+      else:
+        for i in range(6):
+          spaces[f'deter{i}'] = embodied.Space(
+              latdtype, self.config.dyn.stack.rnndim)
+      spaces['stoch'] = embodied.Space(np.int32, latshape[:-1])
+    return spaces
+
+  def init_policy(self, batch_size):
+    prevact = {
+        k: jnp.zeros((batch_size, *v.shape), v.dtype)
+        for k, v in self.act_space.items()}
+    return (self.dyn.initial(batch_size), prevact)
+
+  def init_train(self, batch_size):
+    prevact = {
+        k: jnp.zeros((batch_size, *v.shape), v.dtype)
+        for k, v in self.act_space.items()}
+    return (self.dyn.initial(batch_size), prevact)
+
+  def policy(self, obs, carry, mode='train'):
+    self.config.jax.jit and embodied.print(
+        'Tracing policy function', color='yellow')
+    prevlat, prevact = carry
+    obs = self.preprocess(obs)
+    embed = self.enc(obs, bdims=1)
+    prevact = jaxutils.onehot_dict(prevact, self.act_space)
+    lat, out = self.dyn.observe(
+        prevlat, prevact, embed, obs['is_first'], bdims=1)
+    actor = self.actor(out, bdims=1)
+    act = sample(actor)
+
+    outs = {}
+    if self.config.replay_context:
+      outs.update({k: out[k] for k in self.aux_spaces if k != 'stepid'})
+      outs['stoch'] = jnp.argmax(outs['stoch'], -1).astype(jnp.int32)
+
+    outs['finite'] = {
+        '/'.join(x.key for x in k): (
+            jnp.isfinite(v).all(range(1, v.ndim)),
+            v.min(range(1, v.ndim)),
+            v.max(range(1, v.ndim)))
+        for k, v in jax.tree_util.tree_leaves_with_path(dict(
+            obs=obs, prevlat=prevlat, prevact=prevact,
+            embed=embed, act=act, out=out, lat=lat,
+        ))}
+
+    assert all(
+        k in outs for k in self.aux_spaces
+        if k not in ('stepid', 'finite', 'is_online')), (
+              list(outs.keys()), self.aux_spaces)
+
+    act = {
+        k: jnp.nanargmax(act[k], -1).astype(jnp.int32)
+        if s.discrete else act[k] for k, s in self.act_space.items()}
+    return act, outs, (lat, act)
+
+  def train(self, data, carry):
+    self.config.jax.jit and embodied.print(
+        'Tracing train function', color='yellow')
+    data = self.preprocess(data)
+    stepid = data.pop('stepid')
+
+    if self.config.replay_context:
+      K = self.config.replay_context
+      data = data.copy()
+      # context = {k: data.pop(k)[:, :K] for k in self.aux_spaces if k in data}
+      context = {
+          k: data.pop(k)[:, :K] for k in self.aux_spaces if k != 'stepid'}
+      context['stoch'] = f32(jax.nn.one_hot(
+          context['stoch'], self.config.dyn.rssm.classes))
+      prevlat = self.dyn.outs_to_carry(context)
+      carry = prevlat, carry[1]
+      data = {k: v[:, K:] for k, v in data.items()}
+      stepid = stepid[:, K:]
+
+    if self.config.reset_context:
+      keep = jax.random.uniform(
+          nj.seed(), data['is_first'][:, :1].shape) > self.config.reset_context
+      data['is_first'] = jnp.concatenate([
+          data['is_first'][:, :1] & keep, data['is_first'][:, 1:]], 1)
+
+    mets, (out, carry, metrics) = self.opt(
+        self.modules, self.loss, data, carry, has_aux=True)
     metrics.update(mets)
     self.updater()
+    outs = {}
+
+    if self.config.replay_context:
+      outs['replay'] = {'stepid': stepid}
+      outs['replay'].update({
+          k: out['replay_outs'][k] for k in self.aux_spaces if k != 'stepid'})
+      outs['replay']['stoch'] = jnp.argmax(
+          outs['replay']['stoch'], -1).astype(jnp.int32)
+
+    if self.config.replay.fracs.priority > 0:
+      bs = data['is_first'].shape
+      if self.config.replay.priosignal == 'td':
+        priority = out['critic_loss'][:, 0].reshape(bs)
+      elif self.config.replay.priosignal == 'model':
+        terms = [out[f'{k}_loss'] for k in (
+            'rep', 'dyn', *self.dec.veckeys, *self.dec.imgkeys)]
+        priority = jnp.stack(terms, 0).sum(0)
+      elif self.config.replay.priosignal == 'all':
+        terms = [out[f'{k}_loss'] for k in (
+            'rep', 'dyn', *self.dec.veckeys, *self.dec.imgkeys)]
+        terms.append(out['actor_loss'][:, 0].reshape(bs))
+        terms.append(out['critic_loss'][:, 0].reshape(bs))
+        priority = jnp.stack(terms, 0).sum(0)
+      else:
+        raise NotImplementedError(self.config.replay.priosignal)
+      assert stepid.shape[:2] == priority.shape == bs
+      outs['replay'] = {'stepid': stepid, 'priority': priority}
+
+    return outs, carry, metrics
+
+  def loss(self, data, carry, update=True):
+    metrics = {}
+    prevlat, prevact = carry
+
+    # Replay rollout
+    prevacts = {
+        k: jnp.concatenate([prevact[k][:, None], data[k][:, :-1]], 1)
+        for k in self.act_space}
+    prevacts = jaxutils.onehot_dict(prevacts, self.act_space)
+    embed = self.enc(data)
+    newlat, outs = self.dyn.observe(prevlat, prevacts, embed, data['is_first'])
+    rew_feat = outs if self.config.reward_grad else sg(outs)
+    dists = dict(
+        **self.dec(outs),
+        reward=self.rew(rew_feat, training=True),
+        cont=self.con(outs, training=True))
+    losses = {k: -v.log_prob(f32(data[k])) for k, v in dists.items()}
+    if self.config.contdisc:
+      del losses['cont']
+      softlabel = data['cont'] * (1 - 1 / self.config.horizon)
+      losses['cont'] = -dists['cont'].log_prob(softlabel)
+    dynlosses, mets = self.dyn.loss(outs, **self.config.rssm_loss)
+    losses.update(dynlosses)
+    metrics.update(mets)
+    replay_outs = outs
+
+    # Imagination rollout
+    def imgstep(carry, _):
+      lat, act = carry
+      lat, out = self.dyn.imagine(lat, act, bdims=1)
+      out['stoch'] = sg(out['stoch'])
+      act = cast(sample(self.actor(out, bdims=1)))
+      return (lat, act), (out, act)
+    rew = data['reward']
+    con = 1 - f32(data['is_terminal'])
+    if self.config.imag_start == 'all':
+      B, T = data['is_first'].shape
+      startlat = self.dyn.outs_to_carry(treemap(
+          lambda x: x.reshape((B * T, 1, *x.shape[2:])), replay_outs))
+      startout, startrew, startcon = treemap(
+          lambda x: x.reshape((B * T, *x.shape[2:])),
+          (replay_outs, rew, con))
+    elif self.config.imag_start == 'last':
+      startlat = newlat
+      startout, startrew, startcon = treemap(
+          lambda x: x[:, -1], (replay_outs, rew, con))
+    if self.config.imag_repeat > 1:
+      N = self.config.imag_repeat
+      startlat, startout, startrew, startcon = treemap(
+          lambda x: x.repeat(N, 0), (startlat, startout, startrew, startcon))
+    startact = cast(sample(self.actor(startout, bdims=1)))
+    _, (outs, acts) = jaxutils.scan(
+        imgstep, sg((startlat, startact)),
+        jnp.arange(self.config.imag_length), self.config.imag_unroll)
+    outs, acts = treemap(lambda x: x.swapaxes(0, 1), (outs, acts))
+    outs, acts = treemap(
+        lambda first, seq: jnp.concatenate([first, seq], 1),
+        treemap(lambda x: x[:, None], (startout, startact)), (outs, acts))
+
+    # Annotate
+    rew = jnp.concatenate([startrew[:, None], self.rew(outs).mean()[:, 1:]], 1)
+    con = jnp.concatenate([startcon[:, None], self.con(outs).mean()[:, 1:]], 1)
+    acts = sg(acts)
+    inp = treemap({
+        'none': lambda x: sg(x),
+        'first': lambda x: jnp.concatenate([x[:, :1], sg(x[:, 1:])], 1),
+        'all': lambda x: x,
+    }[self.config.ac_grads], outs)
+    actor = self.actor(inp)
+    critic = self.critic(inp)
+    slowcritic = self.slowcritic(inp)
+    voffset, vscale = self.valnorm.stats()
+    val = critic.mean() * vscale + voffset
+    slowval = slowcritic.mean() * vscale + voffset
+    tarval = slowval if self.config.slowtar else val
+    discount = 1 if self.config.contdisc else 1 - 1 / self.config.horizon
+    weight = jnp.cumprod(discount * con, 1) / discount
+
+    # Return
+    rets = [tarval[:, -1]]
+    disc = con[:, 1:] * discount
+    lam = self.config.return_lambda
+    interm = rew[:, 1:] + (1 - lam) * disc * tarval[:, 1:]
+    for t in reversed(range(disc.shape[1])):
+      rets.append(interm[:, t] + disc[:, t] * lam * rets[-1])
+    ret = jnp.stack(list(reversed(rets))[:-1], 1)
+
+    # Actor
+    roffset, rscale = self.retnorm(ret, update)
+    adv = (ret - tarval[:, :-1]) / rscale
+    aoffset, ascale = self.advnorm(adv, update)
+    adv_normed = (adv - aoffset) / ascale
+    logpi = sum([v.log_prob(sg(acts[k]))[:, :-1] for k, v in actor.items()])
+    ents = {k: v.entropy()[:, :-1] for k, v in actor.items()}
+    if self.config.scale_by_actent:
+      actor_loss = sg(weight[:, :-1]) * -(
+          logpi * sg(adv_normed) * (1 / self.config.actent) +
+          sum(ents.values()))
+    else:
+      actor_loss = sg(weight[:, :-1]) * -(
+          logpi * sg(adv_normed) + self.config.actent * sum(ents.values()))
+    losses['actor'] = actor_loss
+
+    # Critic
+    voffset, vscale = self.valnorm(ret, update)
+    ret_normed = (ret - voffset) / vscale
+    ret_padded = jnp.concatenate([ret_normed, 0 * ret_normed[:, -1:]], 1)
+    losses['critic'] = sg(weight)[:, :-1] * -(
+        critic.log_prob(sg(ret_padded)) +
+        self.config.slowreg * critic.log_prob(sg(slowcritic.mean())))[:, :-1]
+
+    if self.config.replay_critic_loss:
+      replay_critic = self.critic(
+          replay_outs if self.config.replay_critic_grad else sg(replay_outs))
+      replay_slowcritic = self.slowcritic(replay_outs)
+      boot = dict(
+          imag=ret[:, 0].reshape(data['reward'].shape),
+          critic=replay_critic.mean(),
+      )[self.config.replay_critic_bootstrap]
+      rets = [boot[:, -1]]
+      live = f32(~data['is_terminal'])[:, 1:] * (1 - 1 / self.config.horizon)
+      cont = f32(~data['is_last'])[:, 1:] * self.config.return_lambda_replay
+      interm = data['reward'][:, 1:] + (1 - cont) * live * boot[:, 1:]
+      for t in reversed(range(live.shape[1])):
+        rets.append(interm[:, t] + live[:, t] * cont[:, t] * rets[-1])
+      replay_ret = jnp.stack(list(reversed(rets))[:-1], 1)
+      voffset, vscale = self.valnorm(replay_ret, update)
+      ret_normed = (replay_ret - voffset) / vscale
+      ret_padded = jnp.concatenate([ret_normed, 0 * ret_normed[:, -1:]], 1)
+      losses['replay_critic'] = sg(f32(~data['is_last']))[:, :-1] * -(
+          replay_critic.log_prob(sg(ret_padded)) +
+          self.config.slowreg * replay_critic.log_prob(
+              sg(replay_slowcritic.mean())))[:, :-1]
+
+    # Metrics
+    metrics.update({f'{k}_loss': v.mean() for k, v in losses.items()})
+    metrics.update({f'{k}_loss_std': v.std() for k, v in losses.items()})
+    metrics.update(jaxutils.tensorstats(adv, 'adv'))
+    metrics.update(jaxutils.tensorstats(rew, 'rew'))
+    metrics.update(jaxutils.tensorstats(weight, 'weight'))
+    metrics.update(jaxutils.tensorstats(val, 'val'))
+    metrics.update(jaxutils.tensorstats(ret, 'ret'))
+    metrics.update(jaxutils.tensorstats(
+        (ret - roffset) / rscale, 'ret_normed'))
+    if self.config.replay_critic_loss:
+      metrics.update(jaxutils.tensorstats(replay_ret, 'replay_ret'))
+    metrics['td_error'] = jnp.abs(ret - val[:, :-1]).mean()
+    metrics['ret_rate'] = (jnp.abs(ret) > 1.0).mean()
+    for k, space in self.act_space.items():
+      act = f32(jnp.argmax(acts[k], -1) if space.discrete else acts[k])
+      metrics.update(jaxutils.tensorstats(f32(act), f'act/{k}'))
+      if hasattr(actor[k], 'minent'):
+        lo, hi = actor[k].minent, actor[k].maxent
+        rand = ((ents[k] - lo) / (hi - lo)).mean(
+            range(2, len(ents[k].shape)))
+        metrics.update(jaxutils.tensorstats(rand, f'rand/{k}'))
+      metrics.update(jaxutils.tensorstats(ents[k], f'ent/{k}'))
+    metrics['data_rew/max'] = jnp.abs(data['reward']).max()
+    metrics['pred_rew/max'] = jnp.abs(rew).max()
+    metrics['data_rew/mean'] = data['reward'].mean()
+    metrics['pred_rew/mean'] = rew.mean()
+    metrics['data_rew/std'] = data['reward'].std()
+    metrics['pred_rew/std'] = rew.std()
+    if 'reward' in dists:
+      stats = jaxutils.balance_stats(dists['reward'], data['reward'], 0.1)
+      metrics.update({f'rewstats/{k}': v for k, v in stats.items()})
+    if 'cont' in dists:
+      stats = jaxutils.balance_stats(dists['cont'], data['cont'], 0.5)
+      metrics.update({f'constats/{k}': v for k, v in stats.items()})
+    metrics['activation/embed'] = jnp.abs(embed).mean()
+    # metrics['activation/deter'] = jnp.abs(replay_outs['deter']).mean()
+
+    # Combine
+    losses = {k: v * self.scales[k] for k, v in losses.items()}
+    loss = jnp.stack([v.mean() for k, v in losses.items()]).sum()
+    newact = {k: data[k][:, -1] for k in self.act_space}
+    outs = {'replay_outs': replay_outs, 'prevacts': prevacts}
+    outs.update({f'{k}_loss': v for k, v in losses.items()})
+    carry = (newlat, newact)
+    return loss, (outs, carry, metrics)
+
+  def report(self, data):
+    self.config.jax.jit and embodied.print(
+        'Tracing report function', color='yellow')
+    if not self.config.report:
+      return {}
+    metrics = {}
+    data = self.preprocess(data)
+
+    # Train metrics
+    carry = self.init_train(len(data['is_first']))
+    _, (outs, _, mets) = self.loss(data, carry, update=False)
+    metrics.update(mets)
+
+    # Video predictions
+    future_acts = {k: v[:6, 8:] for k, v in outs['prevacts'].items()}
+    context_outs = {k: v[:6, :8] for k, v in outs['replay_outs'].items()}
+    start = self.dyn.outs_to_carry(context_outs)
+    recon = self.dec(context_outs)
+    openl = self.dec(self.dyn.imagine(start, future_acts)[1])
+    for key in self.dec.imgkeys:
+      true = f32(data[key][:6])
+      pred = jnp.concatenate([
+          recon[key].mode()[:, :8], openl[key].mode()], 1)
+      error = (pred - true + 1) / 2
+      video = jnp.concatenate([true, pred, error], 2)
+      metrics[f'openloop/{key}'] = jaxutils.video_grid(video)
+
+    # Grad norms per loss term
+    if self.config.report_gradnorms:
+      for key in self.scales:
+        try:
+          lossfn = lambda data, carry: self.loss(
+              data, carry, update=False)[1][0][f'{key}_loss'].mean()
+          grad = nj.grad(lossfn, self.modules)(data, carry)[-1]
+          metrics[f'gradnorm/{key}'] = optax.global_norm(grad)
+        except KeyError:
+          print(f'Skipping gradnorm summary for missing loss: {key}')
+
     return metrics
 
-  def loss(self, traj, target):
-    metrics = {}
-    traj = {k: v[:-1] for k, v in traj.items()}
-    dist = self.net(traj)
-    loss = -dist.log_prob(sg(target))
-    if self.config.critic_slowreg == 'logprob':
-      reg = -dist.log_prob(sg(self.slow(traj).mean()))
-    elif self.config.critic_slowreg == 'xent':
-      reg = -jnp.einsum(
-          '...i,...i->...',
-          sg(self.slow(traj).probs),
-          jnp.log(dist.probs))
-    else:
-      raise NotImplementedError(self.config.critic_slowreg)
-    loss += self.config.loss_scales.slowreg * reg
-    loss = (loss * sg(traj['weight'])).mean()
-    loss *= self.config.loss_scales.critic
-    metrics = jaxutils.tensorstats(dist.mean())
-    return loss, metrics
+  def preprocess(self, obs):
+    spaces = {**self.obs_space, **self.act_space, **self.aux_spaces}
+    result = {}
+    for key, value in obs.items():
+      if key.startswith('log_') or key in ('reset', 'key', 'id'):
+        continue
+      space = spaces[key]
+      if len(space.shape) >= 3 and space.dtype == jnp.uint8:
+        value = cast(value) / 255.0
+      result[key] = value
+    result['cont'] = 1.0 - f32(result['is_terminal'])
+    return result
 
-  def score(self, traj, actor=None):
-    rew = self.rewfn(traj)
-    assert len(rew) == len(traj['action']) - 1, (
-        'should provide rewards for all but last action')
-    discount = 1 - 1 / self.config.horizon
-    disc = traj['cont'][1:] * discount
-    value = self.net(traj).mean()
-    vals = [value[-1]]
-    interm = rew + disc * value[1:] * (1 - self.config.return_lambda)
-    for t in reversed(range(len(disc))):
-      vals.append(interm[t] + disc[t] * self.config.return_lambda * vals[-1])
-    ret = jnp.stack(list(reversed(vals))[:-1])
-    return rew, ret, value[:-1]
+

@@ -1,0 +1,9 @@
+cloudpickle
+colored
+gputil
+msgpack
+numpy
+psutil
+ruamel.yaml
+tensorflow-cpu
+zmq

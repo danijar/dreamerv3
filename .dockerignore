@@ -1,0 +1,3 @@
+*.py[cod]
+__pycache__/
+dist

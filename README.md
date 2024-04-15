@@ -37,7 +37,7 @@ outperforming specialized methods. Removing the need for tuning reduces the
 amount of expert knowledge and computational resources needed to apply
 reinforcement learning.
 
-![DreamerV3 Benchmark Scores](https://user-images.githubusercontent.com/2111293/217356042-536a693a-cb5e-42aa-a20f-5303a77cad9c.png)
+![DreamerV3 Benchmark Scores](https://github.com/danijar/dreamerv3/assets/2111293/0fe8f1cf-6970-41ea-9efc-e2e2477e7861)
 
 Due to its robustness, DreamerV3 shows favorable scaling properties. Notably,
 using larger models consistently increases not only its final performance but
@@ -48,24 +48,21 @@ increases data efficiency.
 
 # Instructions
 
-## Package
-
-If you just want to run DreamerV3 on a custom environment, you can `pip install
-dreamerv3` and copy [`example.py`][example] from this repository as a starting
-point.
+The code has been tested on Linux and Mac.
 
 ## Docker
 
-If you want to make modifications to the code, you can either use the provided
-`Dockerfile` that contains instructions or follow the manual instructions
-below.
+You can either use the provided `Dockerfile` that contains instructions or
+follow the manual instructions below.
 
 ## Manual
 
 Install [JAX][jax] and then the other dependencies:
 
 ```sh
-pip install -r requirements.txt
+pip install -U -r embodied/requirements.txt
+pip install -U -r dreamerv3/requirements.txt \
+  -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 ```
 
 Simple training script:
@@ -77,21 +74,25 @@ python example.py
 Flexible training script:
 
 ```sh
-python dreamerv3/train.py \
-  --logdir ~/logdir/$(date "+%Y%m%d-%H%M%S") \
-  --configs crafter --batch_size 16 --run.train_ratio 32
+python dreamerv3/main.py \
+  --logdir ~/logdir/{timestamp} \
+  --configs crafter \
+  --run.train_ratio 32
 ```
+
+To reproduce results, train on the desired task using the corresponding config,
+such as `--configs atari --task atari_pong`.
 
 # Tips
 
 - All config options are listed in `configs.yaml` and you can override them
-  from the command line.
+  as flags from the command line.
 - The `debug` config block reduces the network size, batch size, duration
   between logs, and so on for fast debugging (but does not learn a good model).
 - By default, the code tries to run on GPU. You can switch to CPU or TPU using
-  the `--jax.platform cpu` flag. Note that multi-GPU support is untested.
-- You can run with multiple config blocks that will override defaults in the
-  order they are specified, for example `--configs crafter large`.
+  the `--jax.platform cpu` flag.
+- You can use multiple config blocks that will override defaults in the
+  order they are specified, for example `--configs crafter size50m`.
 - By default, metrics are printed to the terminal, appended to a JSON lines
   file, and written as TensorBoard summaries. Other outputs like WandB can be
   enabled in the training script.
@@ -100,16 +101,12 @@ python dreamerv3/train.py \
   often happens when reusing an old logdir by accident.
 - If you are getting CUDA errors, scroll up because the cause is often just an
   error that happened earlier, such as out of memory or incompatible JAX and
-  CUDA versions.
-- You can use the `small`, `medium`, `large` config blocks to reduce memory
-  requirements. The default is `xlarge`. See the scaling graph above to see how
-  this affects performance.
-- Many environments are included, some of which require installating additional
-  packages. See the installation scripts in `scripts` and the `Dockerfile` for
-  reference.
+  CUDA versions. Try `--batch_size 1` to rule out an out of memory error.
+- Many environments are included, some of which require installing additional
+  packages. See the `Dockerfile` for reference.
 - When running on custom environments, make sure to specify the observation
-  keys the agent should be using via `encoder.mlp_keys`, `encode.cnn_keys`,
-  `decoder.mlp_keys` and `decoder.cnn_keys`.
+  keys the agent should be using via `enc.simple.mlp_keys`,
+  `enc.simple.cnn_keys`, `dec.simple.mlp_keys` and `dec.simple.cnn_keys`.
 - To log metrics from environments without showing them to the agent or storing
   them in the replay buffer, return them as observation keys with `log_` prefix
   and enable logging via the `run.log_keys_...` options.

@@ -1,5 +1,8 @@
 import os
+import re
+import threading
 
+import chex
 import embodied
 import jax
 import jax.numpy as jnp
@@ -7,9 +10,6 @@ import numpy as np
 
 from . import jaxutils
 from . import ninjax as nj
-
-tree_map = jax.tree_util.tree_map
-tree_flatten = jax.tree_util.tree_flatten
 
 
 def Wrapper(agent_cls):
@@ -23,109 +23,230 @@ def Wrapper(agent_cls):
 
 class JAXAgent(embodied.Agent):
 
-  def __init__(self, agent_cls, obs_space, act_space, step, config):
-    self.config = config.jax
-    self.batch_size = config.batch_size
-    self.batch_length = config.batch_length
-    self.data_loaders = config.data_loaders
+  def __init__(self, agent_cls, obs_space, act_space, config):
+    print('Observation space')
+    [embodied.print(f'  {k:<16} {v}') for k, v in obs_space.items()]
+    print('Action space')
+    [embodied.print(f'  {k:<16} {v}') for k, v in act_space.items()]
+
+    self.obs_space = obs_space
+    self.act_space = act_space
+    self.config = config
+    self.jaxcfg = config.jax
+    self.logdir = embodied.Path(config.logdir)
     self._setup()
-    self.agent = agent_cls(obs_space, act_space, step, config, name='agent')
+    self.agent = agent_cls(obs_space, act_space, config, name='agent')
     self.rng = np.random.default_rng(config.seed)
+    self.spaces = {**obs_space, **act_space, **self.agent.aux_spaces}
+    self.keys = [k for k in self.spaces if (
+        not k.startswith('_') and not k.startswith('log_') and k != 'reset')]
 
-    available = jax.devices(self.config.platform)
-    self.policy_devices = [available[i] for i in self.config.policy_devices]
-    self.train_devices = [available[i] for i in self.config.train_devices]
-    self.single_device = (self.policy_devices == self.train_devices) and (
-        len(self.policy_devices) == 1)
-    print(f'JAX devices ({jax.local_device_count()}):', available)
-    print('Policy devices:', ', '.join([str(x) for x in self.policy_devices]))
-    print('Train devices: ', ', '.join([str(x) for x in self.train_devices]))
+    available = jax.devices(self.jaxcfg.platform)
+    embodied.print(f'JAX devices ({jax.local_device_count()}):', available)
+    if self.jaxcfg.assert_num_devices > 0:
+      assert len(available) == self.jaxcfg.assert_num_devices, (
+          available, len(available), self.jaxcfg.assert_num_devices)
 
-    self._once = True
-    self._updates = embodied.Counter()
-    self._should_metrics = embodied.when.Every(self.config.metrics_every)
+    policy_devices = [available[i] for i in self.jaxcfg.policy_devices]
+    train_devices = [available[i] for i in self.jaxcfg.train_devices]
+    print('Policy devices:', ', '.join([str(x) for x in policy_devices]))
+    print('Train devices: ', ', '.join([str(x) for x in train_devices]))
+
+    self.policy_mesh = jax.sharding.Mesh(policy_devices, 'i')
+    self.policy_sharded = jax.sharding.NamedSharding(
+        self.policy_mesh, jax.sharding.PartitionSpec('i'))
+    self.policy_mirrored = jax.sharding.NamedSharding(
+        self.policy_mesh, jax.sharding.PartitionSpec())
+
+    self.train_mesh = jax.sharding.Mesh(train_devices, 'i')
+    self.train_sharded = jax.sharding.NamedSharding(
+        self.train_mesh, jax.sharding.PartitionSpec('i'))
+    self.train_mirrored = jax.sharding.NamedSharding(
+        self.train_mesh, jax.sharding.PartitionSpec())
+
+    self.pending_outs = None
+    self.pending_mets = None
+    self.pending_sync = None
+
     self._transform()
-    self.varibs = self._init_varibs(obs_space, act_space)
-    self.sync()
+    self.policy_lock = threading.Lock()
+    self.train_lock = threading.Lock()
+    self.params = self._init_params(obs_space, act_space)
+    self.updates = embodied.Counter()
 
-  def policy(self, obs, state=None, mode='train'):
-    obs = obs.copy()
-    obs = self._convert_inps(obs, self.policy_devices)
-    rng = self._next_rngs(self.policy_devices)
-    varibs = self.varibs if self.single_device else self.policy_varibs
-    if state is None:
-      state, _ = self._init_policy(varibs, rng, obs['is_first'])
+    pattern = re.compile(self.agent.policy_keys)
+    self.policy_keys = [k for k in self.params.keys() if pattern.search(k)]
+    assert self.policy_keys, (list(self.params.keys()), self.agent.policy_keys)
+    self.should_sync = embodied.when.Every(self.jaxcfg.sync_every)
+    self.policy_params = jax.device_put(
+        {k: self.params[k].copy() for k in self.policy_keys},
+        self.policy_mirrored)
+
+    self._lower_train()
+    self._lower_report()
+    self._train = self._train.compile()
+    self._report = self._report.compile()
+    self._stack = jax.jit(lambda xs: jax.tree.map(
+          jnp.stack, xs, is_leaf=lambda x: isinstance(x, list)))
+    self._split = jax.jit(lambda xs: jax.tree.map(
+        lambda x: [y[0] for y in jnp.split(x, len(x))], xs))
+    print('Done compiling train and report!')
+
+  def init_policy(self, batch_size):
+    seed = self._next_seeds(self.policy_sharded)
+    batch_size //= len(self.policy_mesh.devices)
+    carry = self._init_policy(self.policy_params, seed, batch_size)
+    if self.jaxcfg.fetch_policy_carry:
+      carry = self._take_outs(fetch_async(carry))
     else:
-      state = tree_map(
-          np.asarray, state, is_leaf=lambda x: isinstance(x, list))
-      state = self._convert_inps(state, self.policy_devices)
-    (outs, state), _ = self._policy(varibs, rng, obs, state, mode=mode)
-    outs = self._convert_outs(outs, self.policy_devices)
-    # TODO: Consider keeping policy states in accelerator memory.
-    state = self._convert_outs(state, self.policy_devices)
-    return outs, state
+      carry = self._split(carry)
+    return carry
 
-  def train(self, data, state=None):
-    rng = self._next_rngs(self.train_devices)
-    if state is None:
-      state, self.varibs = self._init_train(self.varibs, rng, data['is_first'])
-    (outs, state, mets), self.varibs = self._train(
-        self.varibs, rng, data, state)
-    outs = self._convert_outs(outs, self.train_devices)
-    self._updates.increment()
-    if self._should_metrics(self._updates):
-      mets = self._convert_mets(mets, self.train_devices)
+  def init_train(self, batch_size):
+    seed = self._next_seeds(self.train_sharded)
+    batch_size //= len(self.train_mesh.devices)
+    carry = self._init_train(self.params, seed, batch_size)
+    return carry
+
+  @embodied.timer.section('jaxagent_policy')
+  def policy(self, obs, carry, mode='train'):
+    obs = self._filter_data(obs)
+
+    with embodied.timer.section('prepare_carry'):
+      if self.jaxcfg.fetch_policy_carry:
+        carry = jax.tree.map(
+            np.stack, carry, is_leaf=lambda x: isinstance(x, list))
+      else:
+        with self.policy_lock:
+          carry = self._stack(carry)
+
+    with embodied.timer.section('check_inputs'):
+      for key, space in self.obs_space.items():
+        if key in self.keys:
+          assert np.isfinite(obs[key]).all(), (obs[key], key, space)
+      if self.jaxcfg.fetch_policy_carry:
+        for keypath, value in jax.tree_util.tree_leaves_with_path(carry):
+          assert np.isfinite(value).all(), (value, keypath)
+
+    with embodied.timer.section('upload_inputs'):
+      with self.policy_lock:
+        obs, carry = jax.device_put((obs, carry), self.policy_sharded)
+        seed = self._next_seeds(self.policy_sharded)
+
+    with embodied.timer.section('jit_policy'):
+      with self.policy_lock:
+        acts, outs, carry = self._policy(
+            self.policy_params, obs, carry, seed, mode)
+
+    with embodied.timer.section('swap_params'):
+      with self.policy_lock:
+        if self.pending_sync:
+          old = self.policy_params
+          self.policy_params = self.pending_sync
+          jax.tree.map(lambda x: x.delete(), old)
+          self.pending_sync = None
+
+    with embodied.timer.section('fetch_outputs'):
+      if self.jaxcfg.fetch_policy_carry:
+        acts, outs, carry = self._take_outs(fetch_async((acts, outs, carry)))
+      else:
+        carry = self._split(carry)
+        acts, outs = self._take_outs(fetch_async((acts, outs)))
+
+    with embodied.timer.section('check_outputs'):
+      finite = outs.pop('finite', {})
+      for key, (isfinite, _, _) in finite.items():
+        assert isfinite.all(), str(finite)
+      for key, space in self.act_space.items():
+        if key == 'reset':
+          continue
+        elif space.discrete:
+          assert (acts[key] >= 0).all(), (acts[key], key, space)
+        else:
+          assert np.isfinite(acts[key]).all(), (acts[key], key, space)
+
+    return acts, outs, carry
+
+  @embodied.timer.section('jaxagent_train')
+  def train(self, data, carry):
+    seed = data['seed']
+    data = self._filter_data(data)
+    allo = {k: v for k, v in self.params.items() if k in self.policy_keys}
+    dona = {k: v for k, v in self.params.items() if k not in self.policy_keys}
+    with embodied.timer.section('jit_train'):
+      with self.train_lock:
+        self.params, outs, carry, mets = self._train(
+            allo, dona, data, carry, seed)
+    self.updates.increment()
+
+    if self.should_sync(self.updates) and not self.pending_sync:
+      self.pending_sync = jax.device_put(
+          {k: allo[k] for k in self.policy_keys}, self.policy_mirrored)
     else:
-      mets = {}
-    if self._once:
-      self._once = False
-      assert jaxutils.Optimizer.PARAM_COUNTS
-      for name, count in jaxutils.Optimizer.PARAM_COUNTS.items():
-        mets[f'params_{name}'] = float(count)
-    return outs, state, mets
+      jax.tree.map(lambda x: x.delete(), allo)
 
+    return_outs = {}
+    if self.pending_outs:
+      return_outs = self._take_outs(self.pending_outs)
+    self.pending_outs = fetch_async(outs)
+
+    return_mets = {}
+    if self.pending_mets:
+      return_mets = self._take_mets(self.pending_mets)
+    self.pending_mets = fetch_async(mets)
+
+    if self.jaxcfg.profiler:
+      outdir, copyto = self.logdir, None
+      if str(outdir).startswith(('gs://', '/gcs/')):
+        copyto = outdir
+        outdir = embodied.Path('/tmp/profiler')
+        outdir.mkdir()
+      if self.updates == 100:
+        embodied.print(f'Start JAX profiler: {str(outdir)}', color='yellow')
+        jax.profiler.start_trace(str(outdir))
+      if self.updates == 120:
+        from embodied.core import path as pathlib
+        embodied.print('Stop JAX profiler', color='yellow')
+        jax.profiler.stop_trace()
+        if copyto:
+          pathlib.GFilePath(outdir).copy(copyto)
+          print(f'Copied profiler result {outdir} to {copyto}')
+
+    return return_outs, carry, return_mets
+
+  @embodied.timer.section('jaxagent_report')
   def report(self, data):
-    rng = self._next_rngs(self.train_devices)
-    mets, _ = self._report(self.varibs, rng, data)
-    mets = self._convert_mets(mets, self.train_devices)
+    seed = data['seed']
+    data = self._filter_data(data)
+    with embodied.timer.section('jit_report'):
+      with self.train_lock:
+        mets = self._report(self.params, data, seed)
+        mets = self._take_mets(fetch_async(mets))
     return mets
 
   def dataset(self, generator):
-    batcher = embodied.Batcher(
-        sources=[generator] * self.batch_size,
-        workers=self.data_loaders,
-        postprocess=lambda x: self._convert_inps(x, self.train_devices),
-        prefetch_source=4, prefetch_batch=1)
-    return batcher()
+    def transform(data):
+      return {
+          **jax.device_put(data, self.train_sharded),
+          'seed': self._next_seeds(self.train_sharded)}
+    return embodied.Prefetch(generator, transform)
 
+  @embodied.timer.section('jaxagent_save')
   def save(self):
-    if len(self.train_devices) > 1:
-      varibs = tree_map(lambda x: x[0], self.varibs)
-    else:
-      varibs = self.varibs
-    varibs = jax.device_get(varibs)
-    data = tree_map(np.asarray, varibs)
-    return data
+    with self.train_lock:
+      return jax.device_get(self.params)
 
+  @embodied.timer.section('jaxagent_load')
   def load(self, state):
-    if len(self.train_devices) == 1:
-      self.varibs = jax.device_put(state, self.train_devices[0])
-    else:
-      self.varibs = jax.device_put_replicated(state, self.train_devices)
-    self.sync()
-
-  def sync(self):
-    if self.single_device:
-      return
-    if len(self.train_devices) == 1:
-      varibs = self.varibs
-    else:
-      varibs = tree_map(lambda x: x[0].device_buffer, self.varibs)
-    if len(self.policy_devices) == 1:
-      self.policy_varibs = jax.device_put(varibs, self.policy_devices[0])
-    else:
-      self.policy_varibs = jax.device_put_replicated(
-          varibs, self.policy_devices)
+    with self.train_lock:
+      with self.policy_lock:
+        chex.assert_trees_all_equal_shapes(self.params, state)
+        jax.tree.map(lambda x: x.delete(), self.params)
+        jax.tree.map(lambda x: x.delete(), self.policy_params)
+        self.params = jax.device_put(state, self.train_mirrored)
+        self.policy_params = jax.device_put(
+            {k: self.params[k].copy() for k in self.policy_keys},
+            self.policy_mirrored)
 
   def _setup(self):
     try:
@@ -134,107 +255,160 @@ class JAXAgent(embodied.Agent):
       tf.config.set_visible_devices([], 'TPU')
     except Exception as e:
       print('Could not disable TensorFlow devices:', e)
-    if not self.config.prealloc:
-      os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
-    os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.8'
+    if not self.jaxcfg.prealloc:
+      os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = 'false'
     xla_flags = []
-    if self.config.logical_cpus:
-      count = self.config.logical_cpus
+    if self.jaxcfg.logical_cpus:
+      count = self.jaxcfg.logical_cpus
       xla_flags.append(f'--xla_force_host_platform_device_count={count}')
+    if self.jaxcfg.nvidia_flags:
+      xla_flags.append('--xla_gpu_enable_latency_hiding_scheduler=true')
+      xla_flags.append('--xla_gpu_enable_async_all_gather=true')
+      xla_flags.append('--xla_gpu_enable_async_reduce_scatter=true')
+      xla_flags.append('--xla_gpu_enable_triton_gemm=false')
+      os.environ['CUDA_DEVICE_MAX_CONNECTIONS'] = '1'
+      os.environ['NCCL_IB_SL'] = '1'
+      os.environ['NCCL_NVLS_ENABLE'] = '0'
+      os.environ['CUDA_MODULE_LOADING'] = 'EAGER'
+    if self.jaxcfg.xla_dump:
+      outdir = embodied.Path(self.config.logdir) / 'xla_dump'
+      outdir.mkdir()
+      xla_flags.append(f'--xla_dump_to={outdir}')
+      xla_flags.append('--xla_dump_hlo_as_long_text')
     if xla_flags:
       os.environ['XLA_FLAGS'] = ' '.join(xla_flags)
-    jax.config.update('jax_platform_name', self.config.platform)
-    jax.config.update('jax_disable_jit', not self.config.jit)
-    jax.config.update('jax_debug_nans', self.config.debug_nans)
-    jax.config.update('jax_transfer_guard', 'disallow')
-    if self.config.platform == 'cpu':
-      jax.config.update('jax_disable_most_optimizations', self.config.debug)
-    jaxutils.COMPUTE_DTYPE = getattr(jnp, self.config.precision)
+    jax.config.update('jax_platform_name', self.jaxcfg.platform)
+    jax.config.update('jax_disable_jit', not self.jaxcfg.jit)
+    if self.jaxcfg.transfer_guard:
+      jax.config.update('jax_transfer_guard', 'disallow')
+    if self.jaxcfg.platform == 'cpu':
+      jax.config.update('jax_disable_most_optimizations', self.jaxcfg.debug)
+    jaxutils.COMPUTE_DTYPE = getattr(jnp, self.jaxcfg.compute_dtype)
+    jaxutils.PARAM_DTYPE = getattr(jnp, self.jaxcfg.param_dtype)
 
   def _transform(self):
-    self._init_policy = nj.pure(lambda x: self.agent.policy_initial(len(x)))
-    self._init_train = nj.pure(lambda x: self.agent.train_initial(len(x)))
-    self._policy = nj.pure(self.agent.policy)
-    self._train = nj.pure(self.agent.train)
-    self._report = nj.pure(self.agent.report)
-    if len(self.train_devices) == 1:
-      kw = dict(device=self.train_devices[0])
-      self._init_train = nj.jit(self._init_train, **kw)
-      self._train = nj.jit(self._train, **kw)
-      self._report = nj.jit(self._report, **kw)
-    else:
-      kw = dict(devices=self.train_devices)
-      self._init_train = nj.pmap(self._init_train, 'i', **kw)
-      self._train = nj.pmap(self._train, 'i', **kw)
-      self._report = nj.pmap(self._report, 'i', **kw)
-    if len(self.policy_devices) == 1:
-      kw = dict(device=self.policy_devices[0])
-      self._init_policy = nj.jit(self._init_policy, **kw)
-      self._policy = nj.jit(self._policy, static=['mode'], **kw)
-    else:
-      kw = dict(devices=self.policy_devices)
-      self._init_policy = nj.pmap(self._init_policy, 'i', **kw)
-      self._policy = nj.pmap(self._policy, 'i', static=['mode'], **kw)
 
-  def _convert_inps(self, value, devices):
-    if len(devices) == 1:
-      value = jax.device_put(value, devices[0])
-    else:
-      check = tree_map(lambda x: len(x) % len(devices) == 0, value)
-      if not all(jax.tree_util.tree_leaves(check)):
-        shapes = tree_map(lambda x: x.shape, value)
-        raise ValueError(
-            f'Batch must by divisible by {len(devices)} devices: {shapes}')
-      # TODO: Avoid the reshape?
-      value = tree_map(
-          lambda x: x.reshape((len(devices), -1) + x.shape[1:]), value)
-      shards = []
-      for i in range(len(devices)):
-        shards.append(tree_map(lambda x: x[i], value))
-      value = jax.device_put_sharded(shards, devices)
-    return value
+    def init_policy(params, seed, batch_size):
+      pure = nj.pure(self.agent.init_policy)
+      return pure(params, batch_size, seed=seed)[1]
 
-  def _convert_outs(self, value, devices):
-    value = jax.device_get(value)
-    value = tree_map(np.asarray, value)
-    if len(devices) > 1:
-      value = tree_map(lambda x: x.reshape((-1,) + x.shape[2:]), value)
-    return value
+    def policy(params, obs, carry, seed, mode):
+      pure = nj.pure(self.agent.policy)
+      return pure(params, obs, carry, mode, seed=seed)[1]
 
-  def _convert_mets(self, value, devices):
-    value = jax.device_get(value)
-    value = tree_map(np.asarray, value)
-    if len(devices) > 1:
-      value = tree_map(lambda x: x[0], value)
-    return value
+    def init_train(params, seed, batch_size):
+      pure = nj.pure(self.agent.init_train)
+      return pure(params, batch_size, seed=seed)[1]
 
-  def _next_rngs(self, devices, mirror=False, high=2 ** 63 - 1):
-    if len(devices) == 1:
-      return jax.device_put(self.rng.integers(high), devices[0])
-    elif mirror:
-      return jax.device_put_replicated(
-          self.rng.integers(high), devices)
-    else:
-      return jax.device_put_sharded(
-          list(self.rng.integers(high, size=len(devices))), devices)
+    def train(alloc, donated, data, carry, seed):
+      pure = nj.pure(self.agent.train)
+      combined = {**alloc, **donated}
+      params, (outs, carry, mets) = pure(combined, data, carry, seed=seed)
+      mets = {k: v[None] for k, v in mets.items()}
+      return params, outs, carry, mets
 
-  def _init_varibs(self, obs_space, act_space):
-    varibs = {}
-    rng = self._next_rngs(self.train_devices, mirror=True)
-    dims = (self.batch_size, self.batch_length)
-    data = self._dummy_batch({**obs_space, **act_space}, dims)
-    data = self._convert_inps(data, self.train_devices)
-    state, varibs = self._init_train(varibs, rng, data['is_first'])
-    varibs = self._train(varibs, rng, data, state, init_only=True)
-    # obs = self._dummy_batch(obs_space, (1,))
-    # state, varibs = self._init_policy(varibs, rng, obs['is_first'])
-    # varibs = self._policy(
-    #     varibs, rng, obs, state, mode='train', init_only=True)
-    return varibs
+    def report(params, data, seed):
+      pure = nj.pure(self.agent.report)
+      _, mets = pure(params, data, seed=seed)
+      return {k: v[None] for k, v in mets.items()}
+
+    from jax.experimental.shard_map import shard_map
+    s = jax.sharding.PartitionSpec('i')  # sharded
+    m = jax.sharding.PartitionSpec()     # mirrored
+    if len(self.policy_mesh.devices) > 1:
+      init_policy = lambda params, seed, batch_size, fn=init_policy: shard_map(
+          lambda params, seed: fn(params, seed, batch_size),
+          self.policy_mesh, (m, s), s, check_rep=False)(params, seed)
+      policy = lambda params, obs, carry, seed, mode, fn=policy: shard_map(
+          lambda params, obs, carry, seed: fn(params, obs, carry, seed, mode),
+          self.policy_mesh, (m, s, s, s), s, check_rep=False)(
+              params, obs, carry, seed)
+    if len(self.train_mesh.devices) > 1:
+      init_train = lambda params, seed, batch_size, fn=init_train: shard_map(
+          lambda params, seed: fn(params, seed, batch_size),
+          self.train_mesh, (m, s), s, check_rep=False)(params, seed)
+      train = shard_map(
+          train, self.train_mesh,
+          (m, m, s, s, s), (m, s, s, m), check_rep=False)
+      report = shard_map(
+          report, self.train_mesh,
+          (m, s, s), m, check_rep=False)
+
+    ps, pm = self.policy_sharded, self.policy_mirrored
+    self._init_policy = jax.jit(
+        init_policy, (pm, ps), ps, static_argnames=['batch_size'])
+    self._policy = jax.jit(
+        policy, (pm, ps, ps, ps), ps, static_argnames=['mode'])
+
+    ts, tm = self.train_sharded, self.train_mirrored
+    self._init_train = jax.jit(
+        init_train, (tm, ts), ts, static_argnames=['batch_size'])
+    self._train = jax.jit(
+        train, (tm, tm, ts, ts, ts), (tm, ts, ts, tm), donate_argnums=[1])
+    self._report = jax.jit(
+        report, (tm, ts, ts), tm)
+
+  def _take_mets(self, mets):
+    mets = jax.tree.map(lambda x: x.__array__(), mets)
+    mets = {k: v[0] for k, v in mets.items()}
+    mets = jax.tree.map(
+        lambda x: np.float32(x) if x.dtype == jnp.bfloat16 else x, mets)
+    return mets
+
+  def _take_outs(self, outs):
+    outs = jax.tree.map(lambda x: x.__array__(), outs)
+    outs = jax.tree.map(
+        lambda x: np.float32(x) if x.dtype == jnp.bfloat16 else x, outs)
+    return outs
+
+  def _init_params(self, obs_space, act_space):
+    B, T = self.config.batch_size, self.config.batch_length
+    seed = jax.device_put(np.array([self.config.seed, 0], np.uint32))
+    data = jax.device_put(self._dummy_batch(self.spaces, (B, T)))
+    params = nj.init(self.agent.init_train, static_argnums=[1])(
+        {}, B, seed=seed)
+    _, carry = jax.jit(nj.pure(self.agent.init_train), static_argnums=[1])(
+        params, B, seed=seed)
+    params = nj.init(self.agent.train)(params, data, carry, seed=seed)
+    return jax.device_put(params, self.train_mirrored)
+
+  def _next_seeds(self, sharding):
+    shape = [2 * x for x in sharding.mesh.devices.shape]
+    seeds = self.rng.integers(0, np.iinfo(np.uint32).max, shape, np.uint32)
+    return jax.device_put(seeds, sharding)
+
+  def _filter_data(self, data):
+    return {k: v for k, v in data.items() if k in self.keys}
 
   def _dummy_batch(self, spaces, batch_dims):
-    spaces = list(spaces.items())
+    spaces = [(k, v) for k, v in spaces.items()]
     data = {k: np.zeros(v.shape, v.dtype) for k, v in spaces}
+    data = self._filter_data(data)
     for dim in reversed(batch_dims):
       data = {k: np.repeat(v[None], dim, axis=0) for k, v in data.items()}
     return data
+
+  def _lower_train(self):
+    B = self.config.batch_size
+    T = self.config.batch_length
+    data = self._dummy_batch(self.spaces, (B, T))
+    data = jax.device_put(data, self.train_sharded)
+    seed = self._next_seeds(self.train_sharded)
+    carry = self.init_train(self.config.batch_size)
+    allo = {k: v for k, v in self.params.items() if k in self.policy_keys}
+    dona = {k: v for k, v in self.params.items() if k not in self.policy_keys}
+    self._train = self._train.lower(allo, dona, data, carry, seed)
+
+  def _lower_report(self):
+    B = self.config.batch_size
+    T = self.config.batch_length_eval
+    data = self._dummy_batch(self.spaces, (B, T))
+    data = jax.device_put(data, self.train_sharded)
+    seed = self._next_seeds(self.train_sharded)
+    self._report = self._report.lower(self.params, data, seed)
+
+
+def fetch_async(value):
+  with jax._src.config.explicit_device_get_scope():
+    [x.copy_to_host_async() for x in jax.tree_util.tree_leaves(value)]
+  return value
