@@ -1,42 +1,118 @@
+# import re
+
+# # Define the pattern according to the given logic
+# IS_PATTERN = re.compile(r'.*[^A-Za-z0-9_.-].*')
+
+# # Example keys to check against the pattern
+# keys = [
+#     "simpleKey",   # Expected: Does not match (contains only allowed characters)
+#     "complex:key", # Expected: Matches (contains a colon, which is not allowed)
+#     "anotherKey",  # Expected: Does not match (contains only allowed characters)
+#     "key-with-special@char"  # Expected: Matches (contains a special character '@')
+# ]
+
+# # Check each key against the pattern
+# matches = {key: bool(IS_PATTERN.match(key)) for key in keys}
+
+# print(matches)
+# # With r prefix, backslashes are treated as literal characters
+# path = "C:\\Users\\Username\\Documents\\file.txt"
+# print(path)  # Outputs: C:\Users\Username\Documents\file.txt
+
+# pattern=re.compile("abc")
+# string="abwcd"
+# print(pattern.match(string))  # Output: <re.Match object; span=(0, 3), match='abc'>
+
+# import jax
+# import jax.numpy as jnp
+
+# out = {'a': {"123":(1,2,5)}, 'b': jnp.array([4, 5, 6])}
+# flat, treedef = jax.tree_util.tree_flatten(out)
+# flat[0]=100
+# print(treedef.unflatten(flat))
+# print(flat)
+
+# tree_map = jax.tree_util.tree_map
+# out2=1,2,3
+
+
+# def print_fn(x1, x2, x3):
+#     print(x1, x2, x3)
+
+# print_fn(tree_map(lambda x: x+1, out2))
+
+# import jax
+# import jax.numpy as np
+
+# x = np.arange(4).reshape(1, -1)
+# x2= np.arange(4).reshape(1, -1)+1000
+# # x=np.concat([x,x2],axis=0)
+# y = jax.pmap(lambda x: jax.lax.pmean(x, 'i'), axis_name='i')(x)
+# print(y)
+
+# per = np.percentile
+# x=np.concatenate([x,x2],axis=0)
+# res=per(x,50.0)
+# print(res)
+# assert res==2.0, "Error"
+# import tensorflow as tf
+# import tensorflow_probability as tfp
+# tfd = tfp.distributions
+
+# # Assume a tensor of shape [10, 20, 3], where 3 is originally the event dimension
+# # Each element in 20 is considered an independent event, but you want to treat them as a single event
+# dist = tfd.Normal(loc=tf.zeros([10, 20, 3]), scale=1)  # Shape [10, 20, 3]
+# independent_dist = tfd.Independent(dist, reinterpreted_batch_ndims=1)  
+
+# # The Independent wraps these [20] independent normals into a single multi-dimensional Normal distribution
+# # Sample from the distribution
+# sample = independent_dist.sample()
+
+# # Compute log probability of the sample
+# log_prob = independent_dist.log_prob(sample)
+
+# print("Sample shape:", sample.shape)  # This will output (10, 20,3)
+# print("Log probability shape:", log_prob.shape)  # This will output (10,20)
+
+# poisson_2_by_3 = tfd.Poisson(
+#     rate=[[1., 10., 100.,], [2., 20., 200.]],
+#     name='Two-by-Three Poissons')
+# res=poisson_2_by_3.log_prob(tf.constant([1., 2.])[..., tf.newaxis, tf.newaxis])
+# print(res)
+# aa=[-2.9957323 , -0.10536051, -0.16251892, -1.609438  , -0.2876821 ]
+# print(sum(aa))
+
 import re
+print(re.match("image", "image_layer1"))  # Match found
+print(re.match("image", "my_image_layer1"))  # No match
+print(re.match(".*_layer1", "n_layer1"))
+print(".*")
 
-# Define the pattern according to the given logic
-IS_PATTERN = re.compile(r'.*[^A-Za-z0-9_.-].*')
+shapes={
+    'a':1,
+    'b':2
+}       
+print(shapes.items())        
+some_key, some_shape = list(shapes.items())[0]
+print((1,)+(2,3,4))
 
-# Example keys to check against the pattern
-keys = [
-    "simpleKey",   # Expected: Does not match (contains only allowed characters)
-    "complex:key", # Expected: Matches (contains a colon, which is not allowed)
-    "anotherKey",  # Expected: Does not match (contains only allowed characters)
-    "key-with-special@char"  # Expected: Matches (contains a special character '@')
-]
+needs = f'{{{", ".join(shapes.keys())}}}'
+needss=f'abc{{{shapes.keys()}}}'
 
-# Check each key against the pattern
-matches = {key: bool(IS_PATTERN.match(key)) for key in keys}
-
-print(matches)
-# With r prefix, backslashes are treated as literal characters
-path = "C:\\Users\\Username\\Documents\\file.txt"
-print(path)  # Outputs: C:\Users\Username\Documents\file.txt
-
-pattern=re.compile("abc")
-string="abwcd"
-print(pattern.match(string))  # Output: <re.Match object; span=(0, 3), match='abc'>
-
-import jax
+print(needs,needss)
 import jax.numpy as jnp
+# x=jnp.array([[1,2],[5,6],[9,10],[13,14]])
 
-out = {'a': {"123":(1,2,5)}, 'b': jnp.array([4, 5, 6])}
-flat, treedef = jax.tree_util.tree_flatten(out)
-flat[0]=100
-print(treedef.unflatten(flat))
-print(flat)
-
-tree_map = jax.tree_util.tree_map
-out2=1,2,3
-
-
-def print_fn(x1, x2, x3):
-    print(x1, x2, x3)
-
-print_fn(tree_map(lambda x: x+1, out2))
+# H,W=x.shape
+# x = x.reshape(( H // 2, W // 2, 4))
+# print(x)
+import jax.lax
+x=jnp.array([[1,2,3],[5,6,7],[9,10,11]],dtype=jnp.float32)
+kernel_size=(2,2)
+strides=(2,2)
+out=jax.lax.reduce_window(x, -jnp.inf, jax.lax.max, kernel_size, strides, 'same')
+rhs=jnp.array([[1,2],[1,1]],dtype=jnp.float32)[...,jnp.newaxis,jnp.newaxis]
+x=x[jnp.newaxis,...,jnp.newaxis]
+out_conv=jax.lax.conv_general_dilated(x, rhs, window_strides=(2, 2), padding='SAME', dimension_numbers=('NHWC', 'HWIO', 'NHWC'))
+# print(out)
+print(out_conv.shape)

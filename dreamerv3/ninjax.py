@@ -105,7 +105,7 @@ def context():
   """Access and modify the global context from within an impure function. For
   advanced users only. Prefer to use module methods to access and modify state
   and rng() to get the next RNG key."""
-  context = CONTEXT.get(threading.get_ident(), None)
+  context = CONTEXT.get(threading.get_ident(), None)  # return a Context object
   if context is None:
     raise RuntimeError('Wrap impure functions in pure() before running them.')
   return context
@@ -113,7 +113,10 @@ def context():
 
 @jax.named_scope('rng')
 def rng(amount=None, reserve=16):
-  """Split the global RNG key and return a new local key."""
+  """Split the global RNG (random number generation) key and return a new local key.
+  
+  If not specified how many keys to return (amount), it will pop the first key in the reserve pool and return this key.
+  """
   ctx = context()
   if amount:
     keys = jax.random.split(ctx.rng, amount + 1)
@@ -267,20 +270,25 @@ def cond(pred, true_fun, false_fun, *operands):
 
 @jax.named_scope('scan')
 def scan(fun, carry, xs, reverse=False, unroll=1, modify=False):
-  fun = pure(fun, nested=True)
-  _prerun(fun, carry, jax.tree_util.tree_map(lambda x: x[0], xs))
-  length = len(jax.tree_util.tree_leaves(xs)[0])
-  rngs = rng(length)
+  """  
+  carry: dict or tuple of dict-- initial state, each item SHAPE:(B,.)
+  xs :tuple-- swap(action), swap(embed), swap(is_first) , each SHAPE:(T,B,.)
+  """
+  fun = pure(fun, nested=True)  #converts impure function (use self.xxx, or rng seed) to pure, by adding global state/var (also in output) and rng as arguments
+  _prerun(fun, carry, jax.tree_util.tree_map(lambda x: x[0], xs)) #TODO: maybe some sanity check
+  length = len(jax.tree_util.tree_leaves(xs)[0])   # T
+  rngs = rng(length)  # T keys for random number generation for each time step
   if modify:
     def inner(carry, x):
-      carry, state = carry
+      carry, state = carry   # state here is the global state (var), not the state in trajectory
       x, rng = x
-      (carry, y), state = fun(state, rng, carry, x, create=False)
-      return (carry, state), y
+      (carry, y), state = fun(state, rng, carry, x, create=False) # carry in this line = dict or tuple of dict for traj state
+      return (carry, state), y  # y is the traj state dict or tuple of dict
     (carry, state), ys = jax.lax.scan(
-        inner, (carry, dict(context())), (xs, rngs), length, reverse, unroll)
-    context().update(state)
+        inner, (carry, dict(context())), (xs, rngs), length, reverse, unroll) #(carry, state) is the last output t+1, ys is the stacked version of traj state dict/tuple dict for all timesteps , leading axis to be scanned is the timestep axis
+    context().update(state)  # update the global vars
   else:
+    # not modify the global state/var
     def inner(carry, x):
       x, rng = x
       (carry, y), state = fun(

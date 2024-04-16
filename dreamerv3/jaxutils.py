@@ -53,32 +53,40 @@ def subsample(values, amount=1024):
 
 def scan(fn, inputs, start, unroll=True, modify=False):
   """
-  iter though the inputs trajectory, and get the posterior and prior dict for all timesteps (containing stacked z_1:T, h_1:T,...) (prior + post)  
-  
+  two functions:
+  1-iter though the inputs trajectory, and get the posterior and prior dict for all timesteps (containing stacked z_1:T, h_1:T,...) (prior + post)  
+  2-iter though the inputs trajectory, and get the prior dict for all timesteps (containing stacked z_1:T, h_1:T,...) (prior only)
+
   inputs: wap(action), swap(embed), swap(is_first) , each SHAPE:(T,B,.)
-  start: initial state (post_dict, prior_dict), here post_dict and prior_dict are the same when init
+  start: initial state TUPLE(post_dict, prior_dict) in WM stage, here post_dict and prior_dict are the same when init
+  or start: initial state single(prior_dict) in Actor/Critic (imagination) stage, each item in dict is of shape: (B,.)
+
+  fn: obs_step() or img_step() 
+
+  Returns:
+  (post_dict, prior_dict) or (prior_dict) containing stacked states for all timesteps, SHAPE:(T,B,.)
   """
   fn2 = lambda carry, inp: (fn(carry, inp),) * 2 # copy the fn output to become a tuple of 2 elements
   if not unroll:
     # TODO: this line unclear
-    return nj.scan(fn2, start, inputs, modify=modify)[1]
+    return nj.scan(fn2, start, inputs, modify=modify)[1]  # the stacked version of traj state dict/tuple dict for all timesteps,same as unroll version
   # a "leaf" is defined as an element that cannot be further broken down in terms of the data structure hierarchy.
   length = len(jax.tree_util.tree_leaves(inputs)[0]) # Trajectory length, inputs[0]: action (T,B,.) after swapped
-  carrydef = jax.tree_util.tree_structure(start)   # carrydef: the structure (post_dict, prior_dict)
+  carrydef = jax.tree_util.tree_structure(start)   # carrydef: the structure (post_dict, prior_dict) or (prior_dict)
   carry = start
   outs = []
   for index in range(length):
-    # carry is the state, it passed on to the next timestep
+    # carry (out is the copy) is the state, it passed on to the next timestep
     carry, out = fn2(carry, tree_map(lambda x: x[index], inputs)) # extract each timestep of inputs:(action,embed,is_first), pass it to fn:obs_step()
-    flat, treedef = jax.tree_util.tree_flatten(out)  # out: (post_dict, prior_dict)
+    flat, treedef = jax.tree_util.tree_flatten(out)  # out: (post_dict, prior_dict) or (prior_dict)
     assert treedef == carrydef, (treedef, carrydef)
-    outs.append(flat) # outs: [z_0,h_0,z_0_prob,est_z_0...],[z_1...
+    outs.append(flat) # outs: [z_1,h_1,z_1_prob,est_z_1...],[z_2...
   # stack all z_t , all h_t, all z_t_prob, all est_z_t..., and put the stacked results into a list
   # after stacking z_1:T ,SHAPE:(T,B,.)
   outs = [
       jnp.stack([carry[i] for carry in outs], 0)
-      for i in range(len(outs[0]))]  # len(outs[0])---6 for logit /7 for mean+std (post+prior:[z_0,h_0,z_0_prob,est_z_0...])
-  return carrydef.unflatten(outs)    # return the form back to (post_dict, prior_dict)
+      for i in range(len(outs[0]))]  # len(outs[0])---6 for logit /8 for mean+std (post+prior:[z_1,h_1,z_1_prob,est_z_1...]) or 3/4 only prior
+  return carrydef.unflatten(outs)    # return the form back to (post_dict, prior_dict) or (prior_dict)
 
 
 def symlog(x):
@@ -274,11 +282,22 @@ class Moments(nj.Module):
       raise NotImplementedError(self.impl)
 
   def __call__(self, x):
+    """  
+    return offset and invscale (calculated from EMA percentile)
+    """
     self.update(x)
     return self.stats()
 
   def update(self, x):
+    """  
+    Equation (12): EMA for batch percentile, jnp.percentile will flatten all dimensions of x and calculate the percentile
+    """
     if parallel():
+      # **all-reduce**: to take data distributed across multiple devices, 
+      # perform a specified reduction operation (such as summation, averaging, finding minimums or maximums), 
+      # and then share the result of this operation back to all devices
+
+      # the following should be used in context of jax.pmap
       mean = lambda x: jax.lax.pmean(x.mean(), 'i')
       min_ = lambda x: jax.lax.pmin(x.min(), 'i')
       max_ = lambda x: jax.lax.pmax(x.max(), 'i')
@@ -319,6 +338,13 @@ class Moments(nj.Module):
       raise NotImplementedError(self.impl)
 
   def stats(self):
+    """  
+    return offset and invscale
+
+    offset is the EMA low percentile (5%) 
+
+    invscale is the max(1,S) in Equation (11)
+    """
     if self.impl == 'off':
       return 0.0, 1.0
     elif self.impl == 'mean_std':

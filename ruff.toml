@@ -1,0 +1,3 @@
+[lint]
+# we ignore the lambda assignment warning
+ignore = ["E731"] 

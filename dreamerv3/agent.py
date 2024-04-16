@@ -122,17 +122,25 @@ class Agent(nj.Module):
 class WorldModel(nj.Module):
 
   def __init__(self, obs_space, act_space, config):
-    self.obs_space = obs_space
+    """Here the world models in Equation (3) are initialized + the optimizer + the loss scaling
+
+    Args:
+        obs_space (dict): _description_
+        act_space (dict): _description_
+        config (_type_): _description_
+    """
+    self.obs_space = obs_space           #both space are dict, value is data/input array probably TODO: check what's in the obs/act_space
     self.act_space = act_space['action']
     self.config = config
-    shapes = {k: tuple(v.shape) for k, v in obs_space.items()}
-    shapes = {k: v for k, v in shapes.items() if not k.startswith('log_')}
+    shapes = {k: tuple(v.shape) for k, v in obs_space.items()}               # this is for obs_shape, now only tuple of dimension in value
+    shapes = {k: v for k, v in shapes.items() if not k.startswith('log_')}   # exclude the log_xxx keys
     self.encoder = nets.MultiEncoder(shapes, **config.encoder, name='enc')
     self.rssm = nets.RSSM(**config.rssm, name='rssm')
     self.heads = {
         'decoder': nets.MultiDecoder(shapes, **config.decoder, name='dec'),
         'reward': nets.MLP((), **config.reward_head, name='rew'),
         'cont': nets.MLP((), **config.cont_head, name='cont')}
+    # TODO: need to look into the Optimizer class
     self.opt = jaxutils.Optimizer(name='model_opt', **config.model_opt)
     scales = self.config.loss_scales.copy()
     image, vector = scales.pop('image'), scales.pop('vector')
@@ -141,8 +149,16 @@ class WorldModel(nj.Module):
     self.scales = scales
 
   def initial(self, batch_size):
+    """Initialize the latent state (dict) and action (B,A)
+
+    Args:
+        batch_size (int): B
+
+    Returns:
+        tuple: the latent state (dict) and action (B,A)
+    """
     prev_latent = self.rssm.initial(batch_size)
-    prev_action = jnp.zeros((batch_size, *self.act_space.shape))
+    prev_action = jnp.zeros((batch_size, *self.act_space.shape)) # initialize action to 0, SHAPE: (B,A)
     return prev_latent, prev_action
 
   def train(self, data, state):
@@ -281,8 +297,8 @@ class ImagActorCritic(nj.Module):
 
   def loss(self, traj):
     """ 
-    Function (11) + (12)
-    TODO: scaling mechanism not clear,sg(traj['weight']) not clear, how to get percentile of the return batch not clear---probably calculated among all trajs in a batch at each timestep?
+    Equation (11) + (12)
+    TODO: scaling mechanism not clear,sg(traj['weight']) not clear
     """
     metrics = {}
     advs = []
@@ -352,7 +368,7 @@ class VFunction(nj.Module):
 
   def loss(self, traj, target):
     """ 
-     function (10)
+     Equation (10)
      target: R_t, t=0,1,2,...,T-1
      
     """
@@ -377,15 +393,15 @@ class VFunction(nj.Module):
 
   def score(self, traj, actor=None):
     """ 
-     function (7)
+     Equation (7)
      self.rewfn ---> the reward predictor, rew ---> r
     """
-    rew = self.rewfn(traj) # not include the last reward r_T+1, so: r_1, r_2, ..., r_T
+    rew = self.rewfn(traj) # not include the last reward r_T, so: r_0, r_1, ..., r_T-1
     assert len(rew) == len(traj['action']) - 1, (
         'should provide rewards for all but last action')
     discount = 1 - 1 / self.config.horizon #gamma
     disc = traj['cont'][1:] * discount #gamma *c_t , t=0,1,2,...,T-1
-    value = self.net(traj).mean()  # critic value
+    value = self.net(traj).mean()  # critic value t=0,1...T
     vals = [value[-1]] # R_T
     interm = rew + disc * value[1:] * (1 - self.config.return_lambda)
     for t in reversed(range(len(disc))):

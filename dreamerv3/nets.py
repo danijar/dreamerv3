@@ -35,6 +35,7 @@ class RSSM(nj.Module):
     Initialize the state of the model
 
     stoch is a sample of prob (logit /mean+std) ,can be the mode of the prob distribution 
+    Return: a dict of the initial state
     """
     if self._classes:
       # if it is dicrete/classification, the state includes a one-hot vector logits for each dim in stochastic latent state
@@ -80,10 +81,16 @@ class RSSM(nj.Module):
     return post, prior
 
   def imagine(self, action, state=None):
+    """  
+    Fig.3(b) --- use imagined state and action trajectory, for Actor-Critic learning
+    action: (B,T,A), A is the action dim
+    Return:
+    prior dict for all timesteps (containing stacked est_z_1:T, h_1:T,...) each SHAPE: (B,T,.)
+    """
     swap = lambda x: x.transpose([1, 0] + list(range(2, len(x.shape))))
     state = self.initial(action.shape[0]) if state is None else state
-    assert isinstance(state, dict), state
-    action = swap(action)
+    assert isinstance(state, dict), state #if not dict, raising error and print out state.
+    action = swap(action)  # now (T,B,.)
     prior = jaxutils.scan(self.img_step, action, state, self._unroll)
     prior = {k: swap(v) for k, v in prior.items()}
     return prior
@@ -120,7 +127,7 @@ class RSSM(nj.Module):
         lambda x, y: x + self._mask(y, is_first),
         prev_state, self.initial(len(is_first)))   # replace/add the first state (already 0) with the initial state, len(is_first) is the batch size
     prior = self.img_step(prev_state, prev_action) # include est_z_t
-    x = jnp.concatenate([prior['deter'], embed], -1)  # prepare for encoder output
+    x = jnp.concatenate([prior['deter'], embed], -1)  # prepare for encoder output acc. to Equation (3)
     x = self.get('obs_out', Linear, **self._kw)(x)
     stats = self._stats('obs_stats', x)
     dist = self.get_dist(stats)
@@ -206,6 +213,9 @@ class RSSM(nj.Module):
     return jnp.einsum('b...,b->b...', value, mask.astype(value.dtype))
 
   def dyn_loss(self, post, prior, impl='kl', free=1.0):
+    """  
+    Equation (5).2 in the paper, the loss function for the dynamics model
+    """
     if impl == 'kl':
       loss = self.get_dist(sg(post)).kl_divergence(self.get_dist(prior))
     elif impl == 'logprob':
@@ -217,6 +227,9 @@ class RSSM(nj.Module):
     return loss
 
   def rep_loss(self, post, prior, impl='kl', free=1.0):
+    """  
+    Equation (5).3 in the paper, the loss function for the dynamics model
+    """
     if impl == 'kl':
       loss = self.get_dist(post).kl_divergence(self.get_dist(sg(prior)))
     elif impl == 'uniform':
@@ -240,9 +253,14 @@ class MultiEncoder(nj.Module):
       mlp_units=512, cnn='resize', cnn_depth=48,
       cnn_blocks=2, resize='stride',
       symlog_inputs=False, minres=4, **kw):
+    """  
+    Args:
+    shapes: dict of shapes in tuple (obs_shape)
+    """
     excluded = ('is_first', 'is_last')
     shapes = {k: v for k, v in shapes.items() if (
         k not in excluded and not k.startswith('log_'))}
+    # Extract the shapes used for CNN and MLP by matching the cnn/mlp_key from the beginning of the key in dict
     self.cnn_shapes = {k: v for k, v in shapes.items() if (
         len(v) == 3 and re.match(cnn_keys, k))}
     self.mlp_shapes = {k: v for k, v in shapes.items() if (
@@ -260,8 +278,11 @@ class MultiEncoder(nj.Module):
       self._mlp = MLP(None, mlp_layers, mlp_units, dist='none', **mlp_kw)
 
   def __call__(self, data):
-    some_key, some_shape = list(self.shapes.items())[0]
-    batch_dims = data[some_key].shape[:-len(some_shape)]
+    """  
+    
+    """
+    some_key, some_shape = list(self.shapes.items())[0]  #flatten dict to list of tuples of key and value and pick the first tuple
+    batch_dims = data[some_key].shape[:-len(some_shape)] #TODO, why data has the same key, is it some dicts? does it have mutiple batch dim?
     data = {
         k: v.reshape((-1,) + v.shape[len(batch_dims):])
         for k, v in data.items()}
@@ -269,7 +290,7 @@ class MultiEncoder(nj.Module):
     if self.cnn_shapes:
       inputs = jnp.concatenate([data[k] for k in self.cnn_shapes], -1)
       output = self._cnn(inputs)
-      output = output.reshape((output.shape[0], -1))
+      output = output.reshape((output.shape[0], -1))  # flatten the output but keep the batch dim
       outputs.append(output)
     if self.mlp_shapes:
       inputs = [
@@ -319,6 +340,9 @@ class MultiDecoder(nj.Module):
     self._image_dist = image_dist
 
   def __call__(self, inputs, drop_loss_indices=None):
+    """  
+    TODO: need to identify the shape of the inputs dict and what is the drop_loss_indices
+    """
     features = self._inputs(inputs)
     dists = {}
     if self.cnn_shapes:
@@ -352,32 +376,46 @@ class ImageEncoderResnet(nj.Module):
     self._depth = depth
     self._blocks = blocks
     self._resize = resize
-    self._minres = minres
+    self._minres = minres # min size H W in the ResNet blocks
     self._kw = kw
 
   def __call__(self, x):
+    """ImageEncoderResnet forward pass
+
+    Args:
+        x (array): Input image with shape (B,H,W,C)
+
+    Raises:
+        NotImplementedError: resize method should be one of 'stride', 'stride3', 'mean', 'max'
+
+    Returns:
+        array: flattened output with shape (B, x)
+    """
+
     stages = int(np.log2(x.shape[-2]) - np.log2(self._minres))
-    depth = self._depth
-    x = jaxutils.cast_to_compute(x) - 0.5
+    depth = self._depth  # depth of the first stage
+    x = jaxutils.cast_to_compute(x) - 0.5 # normalize the image input from [0,1] to [-0.5,0.5]
     # print(x.shape)
     for i in range(stages):
       kw = {**self._kw, 'preact': False}
+      # 1--The beginning of each stage with resizing/pooing to halve the H,W
       if self._resize == 'stride':
-        x = self.get(f's{i}res', Conv2D, depth, 4, 2, **kw)(x)
+        x = self.get(f's{i}res', Conv2D, depth, 4, 2, **kw)(x) #should output the same order of dims as input, but the H,W is halved
       elif self._resize == 'stride3':
-        s = 2 if i else 3
-        k = 5 if i else 4
+        s = 2 if i else 3   # 2x2 stride for the rest of the stages, 3x3 stride for the first stage
+        k = 5 if i else 4  # 5x5 kernel for the rest of the stages, 4x4 for the first stage
         x = self.get(f's{i}res', Conv2D, depth, k, s, **kw)(x)
-      elif self._resize == 'mean':
+      elif self._resize == 'mean':   # conv+mean pooling, but not traditional 
         N, H, W, D = x.shape
         x = self.get(f's{i}res', Conv2D, depth, 3, 1, **kw)(x)
         x = x.reshape((N, H // 2, W // 2, 4, D)).mean(-2)
-      elif self._resize == 'max':
+      elif self._resize == 'max':    # conv+max pooling, sliding window, more like traditional 
         x = self.get(f's{i}res', Conv2D, depth, 3, 1, **kw)(x)
         x = jax.lax.reduce_window(
-            x, -jnp.inf, jax.lax.max, (1, 3, 3, 1), (1, 2, 2, 1), 'same')
+            x, -jnp.inf, jax.lax.max, (1, 3, 3, 1), (1, 2, 2, 1), 'same') # "same" to output exactly half the size of the input when stride=2
       else:
         raise NotImplementedError(self._resize)
+      # 2--The subsequent blocks of convolutions in ResNet, with skip connections
       for j in range(self._blocks):
         skip = x
         kw = {**self._kw, 'preact': True}
@@ -385,10 +423,10 @@ class ImageEncoderResnet(nj.Module):
         x = self.get(f's{i}b{j}conv2', Conv2D, depth, 3, **kw)(x)
         x += skip
         # print(x.shape)
-      depth *= 2
+      depth *= 2  # double the depth of the next stage
     if self._blocks:
       x = get_act(self._kw['act'])(x)
-    x = x.reshape((x.shape[0], -1))
+    x = x.reshape((x.shape[0], -1)) # flatten the output but keep the batch dim
     # print(x.shape)
     return x
 
@@ -558,7 +596,7 @@ class Conv2D(nj.Module):
   def __init__(
       self, depth, kernel, stride=1, transp=False, act='none', norm='none',
       pad='same', bias=True, preact=False, winit='uniform', fan='avg'):
-    self._depth = depth
+    self._depth = depth  # output channel dim
     self._kernel = kernel
     self._stride = stride
     self._transp = transp
@@ -566,9 +604,9 @@ class Conv2D(nj.Module):
     self._norm = Norm(norm, name='norm')
     self._pad = pad.upper()
     self._bias = bias and (preact or norm == 'none')
-    self._preact = preact
-    self._winit = winit
-    self._fan = fan
+    self._preact = preact # whether to apply normalization and activation before convolution
+    self._winit = winit # distribution for weight initialization, 'uniform' or 'normal' or 'orthogonal'
+    self._fan = fan # for weight initialization, 'avg' or 'in' or 'out'
 
   def __call__(self, hidden):
     if self._preact:
@@ -582,6 +620,15 @@ class Conv2D(nj.Module):
     return hidden
 
   def _layer(self, x):
+    """convolutional layer
+
+    Args:
+        x (array): input tensor/image with shape (N,H,W,C)
+
+    Returns:
+        array: tensor with shape (N,H,W,C), if self._pad='same', the output H,W is the same as input shape if stride=1; if stride=2, the output H,W is half of the input shape (special: odd number, output odd//2+1)
+    """
+
     if self._transp:
       shape = (self._kernel, self._kernel, self._depth, x.shape[-1])
       kernel = self.get('kernel', Initializer(
@@ -597,7 +644,7 @@ class Conv2D(nj.Module):
       kernel = jaxutils.cast_to_compute(kernel)
       x = jax.lax.conv_general_dilated(
           x, kernel, (self._stride, self._stride), self._pad,
-          dimension_numbers=('NHWC', 'HWIO', 'NHWC'))
+          dimension_numbers=('NHWC', 'HWIO', 'NHWC')) # input/output dim: (N,H,W,C), kernel dim: (H,W,I,O)
     if self._bias:
       bias = self.get('bias', jnp.zeros, self._depth, np.float32)
       bias = jaxutils.cast_to_compute(bias)
@@ -662,18 +709,25 @@ class Norm(nj.Module):
 class Input:
 
   def __init__(self, keys=['tensor'], dims=None):
+    """  
+    speicify required keys and desired dim number (given a specific key and use its value dim as target, default is the first key in key lists) for input values
+    """
     assert isinstance(keys, (list, tuple)), keys
     self._keys = tuple(keys)
     self._dims = dims or self._keys[0]
 
   def __call__(self, inputs):
+    """  
+    check whether keys missing in the input dict, apply softmax if specified in key and reshape the value to the desired (dims),
+    at last concat all required values by self._keys together
+    """
     if not isinstance(inputs, dict):
       inputs = {'tensor': inputs}
     inputs = inputs.copy()
     for key in self._keys:
       if key.startswith('softmax_'):
-        inputs[key] = jax.nn.softmax(inputs[key[len('softmax_'):]])
-    if not all(k in inputs for k in self._keys):
+        inputs[key] = jax.nn.softmax(inputs[key[len('softmax_'):]])  # do softmax upon the corresponding value to the rest of keywords after 'softmax_' in input dict
+    if not all(k in inputs for k in self._keys):  # check all keys in self._keys are in the input dict
       needs = f'{{{", ".join(self._keys)}}}'
       found = f'{{{", ".join(inputs.keys())}}}'
       raise KeyError(f'Cannot find keys {needs} among inputs {found}.')
@@ -682,7 +736,7 @@ class Input:
     for i, value in enumerate(values):
       if len(value.shape) > dims:
         values[i] = value.reshape(
-            value.shape[:dims - 1] + (np.prod(value.shape[dims - 1:]),))
+            value.shape[:dims - 1] + (np.prod(value.shape[dims - 1:]),)) # reshape the value to match the num of dims, flatten the tails
     values = [x.astype(inputs[self._dims].dtype) for x in values]
     return jnp.concatenate(values, -1)
 
@@ -692,15 +746,23 @@ class Initializer:
   def __init__(self, dist='uniform', scale=1.0, fan='avg'):
     self.scale = scale
     self.dist = dist
-    self.fan = fan
+    self.fan = fan  #init weight based on 'average of fanin and fanout' or 'fanin' or 'fanout'
 
   def __call__(self, shape):
-    """ 
-    calculate the initial value of the kernel (weights) based on the shape of the kernel and the distribution type
+    """calculate the initial value of the kernel (weights) based on the shape of the kernel and the distribution type
+    
+    Args:
+        shape (tuple): shape of the kernel (weights)
+
+    Raises:
+        NotImplementedError: the distribution type must be one of 'uniform', 'normal', 'ortho'
+
+    Returns:
+        array: initial value of the kernel (weights)
     """
     if self.scale == 0.0:
       value = jnp.zeros(shape, f32)
-    elif self.dist == 'uniform':
+    elif self.dist == 'uniform':   # like a uniform version of He initialization if use avg
       fanin, fanout = self._fans(shape)
       denoms = {'avg': (fanin + fanout) / 2, 'in': fanin, 'out': fanout}
       scale = self.scale / denoms[self.fan]
@@ -728,11 +790,15 @@ class Initializer:
     return value
 
   def _fans(self, shape):
-    """ 
-    calculate the "fan-in" and "fan-out" values for a given tensor shape, which are commonly used for initializing weights in neural networks. 
+    """calculate the "fan-in" and "fan-out" values for a given tensor shape, which are commonly used for initializing weights in neural networks. 
     These values help define the scale of weight initialization, ensuring appropriate variance across layers 
     y = X @ W, each row of X is a sample
-    Output: fan_in (input dim), fan_out (output dim)
+
+    Args:
+        shape (tuple): shape of the kernel (weights)
+
+    Returns:
+        tuple: fan_in (input dim), fan_out (output dim)
     """
     if len(shape) == 0:
       return 1, 1
@@ -741,8 +807,8 @@ class Initializer:
     elif len(shape) == 2:
       return shape
     else:
-      space = int(np.prod(shape[:-2]))
-      return shape[-2] * space, shape[-1] * space
+      space = int(np.prod(shape[:-2])) # think of as the batch size
+      return shape[-2] * space, shape[-1] * space # for kernel (H,W,I,O), fan_in=H*W*I, fan_out=H*W*O
 
 
 def get_act(name):
