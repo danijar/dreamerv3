@@ -519,6 +519,7 @@ class MLP(nj.Module):
     x = x.reshape(feat.shape[:-1] + (x.shape[-1],))  # recover back to the input shape
     if self._shape is None:
       return x
+    # if the event shape is not None, then process further to get the distance measure object from the output x
     elif isinstance(self._shape, tuple):
       return self._out('out', self._shape, x)
     elif isinstance(self._shape, dict):
@@ -558,13 +559,13 @@ class Dist(nj.Module):
     self._bins = bins
 
   def __call__(self, inputs):
-    """forward pass of the Dist module to get the distance calculation method
+    """forward pass of the Dist module to get the parametrized distance calculation object
 
     Args:
         inputs (array): input data
 
     Returns:
-        obj: distance calculation method
+        obj: distance calculation obj, params have been calculated and set by the input data
     """
     dist = self.inner(inputs)
     assert tuple(dist.batch_shape) == tuple(inputs.shape[:-1]), (
@@ -617,7 +618,8 @@ class Dist(nj.Module):
       if len(self._shape) > 1:  # if it is multi-dim action, add the rightmost batch dim to the event space for convenient sampling
         dist = tfd.Independent(dist, len(self._shape) - 1)
       dist.minent = 0.0
-      dist.maxent = np.prod(self._shape[:-1]) * jnp.log(self._shape[-1])
+      # Here self._shape[:-1] could be 2 if the discrete action is 2D, and self._shape[-1] is the number of classes for each action dim
+      dist.maxent = np.prod(self._shape[:-1]) * jnp.log(self._shape[-1]) # max entropy of one-hot distributions (when all probs are equal)
       return dist
     raise NotImplementedError(self._dist)
 
