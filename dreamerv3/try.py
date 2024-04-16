@@ -85,34 +85,72 @@
 import re
 print(re.match("image", "image_layer1"))  # Match found
 print(re.match("image", "my_image_layer1"))  # No match
-print(re.match(".*_layer1", "n_layer1"))
-print(".*")
+print(re.match("$^", ""))
+# print(".*")
 
-shapes={
-    'a':1,
-    'b':2
-}       
-print(shapes.items())        
-some_key, some_shape = list(shapes.items())[0]
-print((1,)+(2,3,4))
+# shapes={
+#     'a':1,
+#     'b':2
+# }       
+# print(shapes.items())        
+# some_key, some_shape = list(shapes.items())[0]
+# print((1,)+(2,3,4))
 
-needs = f'{{{", ".join(shapes.keys())}}}'
-needss=f'abc{{{shapes.keys()}}}'
+# needs = f'{{{", ".join(shapes.keys())}}}'
+# needss=f'abc{{{shapes.keys()}}}'
 
-print(needs,needss)
+# print(needs,needss)
 import jax.numpy as jnp
-# x=jnp.array([[1,2],[5,6],[9,10],[13,14]])
+# # x=jnp.array([[1,2],[5,6],[9,10],[13,14]])
 
-# H,W=x.shape
-# x = x.reshape(( H // 2, W // 2, 4))
-# print(x)
+# # H,W=x.shape
+# # x = x.reshape(( H // 2, W // 2, 4))
+# # print(x)
 import jax.lax
-x=jnp.array([[1,2,3],[5,6,7],[9,10,11]],dtype=jnp.float32)
-kernel_size=(2,2)
-strides=(2,2)
-out=jax.lax.reduce_window(x, -jnp.inf, jax.lax.max, kernel_size, strides, 'same')
-rhs=jnp.array([[1,2],[1,1]],dtype=jnp.float32)[...,jnp.newaxis,jnp.newaxis]
-x=x[jnp.newaxis,...,jnp.newaxis]
-out_conv=jax.lax.conv_general_dilated(x, rhs, window_strides=(2, 2), padding='SAME', dimension_numbers=('NHWC', 'HWIO', 'NHWC'))
-# print(out)
-print(out_conv.shape)
+# x=jnp.array([[1,2,3],[5,6,7],[9,10,11]],dtype=jnp.float32)
+# kernel_size=(2,2)
+# strides=(2,2)
+# out=jax.lax.reduce_window(x, -jnp.inf, jax.lax.max, kernel_size, strides, 'same')
+# rhs=jnp.array([[1,2],[1,1]],dtype=jnp.float32)[...,jnp.newaxis,jnp.newaxis]
+# x=x[jnp.newaxis,...,jnp.newaxis]
+# out_conv=jax.lax.conv_general_dilated(x, rhs, window_strides=(2, 2), padding='SAME', dimension_numbers=('NHWC', 'HWIO', 'NHWC'))
+# # print(out)
+# print(out_conv.shape)
+
+low=0.0
+high=1.0
+logits=jnp.array([[0.1,0.2,0.3,0.4],[0.5,0.6,0.7,0.8],[0.9,1.0,1.1,1.2]],dtype=jnp.float32)
+x=jnp.array([0.1,0.2,0.3],dtype=jnp.float32)
+bins = jnp.linspace(low, high, logits.shape[-1])
+print("bins",bins)
+below = (bins <= x[..., None]).astype(jnp.int32).sum(-1) - 1
+print(below)
+
+import tensorflow_probability as tfp
+import tensorflow as tf
+
+# Enable eager execution for immediate result outputs (not needed if using TF2.x).
+tf.compat.v1.enable_eager_execution()
+
+tfd = tfp.distributions
+
+# Define probabilities for each category/class.
+# These should sum to 1 across the last dimension.
+probs = [0.1, 0.6, 0.3]  # Example probabilities for 3 categories.
+probs=jnp.array(probs,dtype=jnp.float32)
+probs=probs[None,...]
+# Create a OneHotCategorical distribution with specified probabilities.
+dist = tfd.OneHotCategorical(probs=probs)
+
+# Sample from the distribution.
+sample = dist.sample()
+
+# Print the output sample and its shape.
+print("Sample:")
+print(sample.numpy())
+print("Sample Shape:", sample.shape)
+
+# Print the probabilities and their shape.
+print("Probabilities:")
+print(dist.probs_parameter().numpy())
+print("Probabilities Shape:", dist.probs_parameter().shape)

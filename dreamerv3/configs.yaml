@@ -172,7 +172,7 @@ dmc_vision:
   .*\.cnn_depth: 32
   .*\.layers: 2
   .*\.units: 512
-  encoder: {mlp_keys: '$^', cnn_keys: 'image'}
+  encoder: {mlp_keys: '$^', cnn_keys: 'image'}  # '$^' means to match an empty string---> just ignore the mlp part in this task
   decoder: {mlp_keys: '$^', cnn_keys: 'image'}
 
 dmc_proprio:

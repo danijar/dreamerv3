@@ -188,7 +188,7 @@ class RSSM(nj.Module):
   def _stats(self, name, x):
     """ 
     given input x, apply a Linear layer to x and return a prob. distribution of the stochastic latent state.
-    Here have the 1% uniform + 99% NN output trick for discrete problem (in dynamics and encoder)
+    Here have the 1% uniform + 99% NN output trick for discrete problem (in dynamics and encoder and actor, see Unimix categoricals in page 19, Section C: Summary of Differences)
     """
     if self._classes:
       x = self.get(name, Linear, self._stoch * self._classes)(x)
@@ -278,8 +278,13 @@ class MultiEncoder(nj.Module):
       self._mlp = MLP(None, mlp_layers, mlp_units, dist='none', **mlp_kw)
 
   def __call__(self, data):
-    """  
-    
+    """Forward pass of the encoder,
+
+    Args:
+        data (dict): input, should contain images for CNN or vectors for MLP
+
+    Returns:
+        array: _description_
     """
     some_key, some_shape = list(self.shapes.items())[0]  #flatten dict to list of tuples of key and value and pick the first tuple
     batch_dims = data[some_key].shape[:-len(some_shape)] #TODO, why data has the same key, is it some dicts? does it have mutiple batch dim?
@@ -288,9 +293,9 @@ class MultiEncoder(nj.Module):
         for k, v in data.items()}
     outputs = []
     if self.cnn_shapes:
-      inputs = jnp.concatenate([data[k] for k in self.cnn_shapes], -1)
+      inputs = jnp.concatenate([data[k] for k in self.cnn_shapes], -1) # concatenate the input data along the last dim
       output = self._cnn(inputs)
-      output = output.reshape((output.shape[0], -1))  # flatten the output but keep the batch dim
+      output = output.reshape((output.shape[0], -1))  # flatten the output but keep the batch dim, repeated again to ensure
       outputs.append(output)
     if self.mlp_shapes:
       inputs = [
@@ -504,14 +509,14 @@ class MLP(nj.Module):
     self._dist = {k: v for k, v in kw.items() if k in distkeys}
 
   def __call__(self, inputs):
-    feat = self._inputs(inputs)
+    feat = self._inputs(inputs)  # dict to concated array
     if self._symlog_inputs:
       feat = jaxutils.symlog(feat)
     x = jaxutils.cast_to_compute(feat)
-    x = x.reshape([-1, x.shape[-1]])
+    x = x.reshape([-1, x.shape[-1]])  # flatten the input but keep the last dim
     for i in range(self._layers):
       x = self.get(f'h{i}', Linear, self._units, **self._dense)(x)
-    x = x.reshape(feat.shape[:-1] + (x.shape[-1],))
+    x = x.reshape(feat.shape[:-1] + (x.shape[-1],))  # recover back to the input shape
     if self._shape is None:
       return x
     elif isinstance(self._shape, tuple):
@@ -530,6 +535,18 @@ class Dist(nj.Module):
   def __init__(
       self, shape, dist='mse', outscale=0.1, outnorm=False, minstd=1.0,
       maxstd=1.0, unimix=0.0, bins=255):
+    """ a wrapper for different distance/log_prob types, to get the distance measure using different methods
+        including processing for discrete regression result, see Critic Learning section in the paper
+    Args:
+        shape (tuple): event shape of the distribution, usually length=1
+        dist (str, optional): distance method. Defaults to 'mse'.
+        outscale (float, optional): _description_. Defaults to 0.1.
+        outnorm (bool, optional): _description_. Defaults to False.
+        minstd (float, optional): for "normal" dist method, will also influence the min entropy of the normal distribution. Defaults to 1.0.
+        maxstd (float, optional): for "normal" dist method, will also influence the max entropy of the normal distribution. Defaults to 1.0.
+        unimix (float, optional): the mixing extent of uniform distribution with the output distribution. Defaults to 0.0.
+        bins (int, optional): only used in discrete settings. Defaults to 255.
+    """
     assert all(isinstance(dim, int) for dim in shape), shape
     self._shape = shape
     self._dist = dist
@@ -541,6 +558,14 @@ class Dist(nj.Module):
     self._bins = bins
 
   def __call__(self, inputs):
+    """forward pass of the Dist module to get the distance calculation method
+
+    Args:
+        inputs (array): input data
+
+    Returns:
+        obj: distance calculation method
+    """
     dist = self.inner(inputs)
     assert tuple(dist.batch_shape) == tuple(inputs.shape[:-1]), (
         dist.batch_shape, dist.event_shape, inputs.shape)
@@ -550,26 +575,30 @@ class Dist(nj.Module):
     kw = {}
     kw['outscale'] = self._outscale
     kw['outnorm'] = self._outnorm
-    shape = self._shape
-    if self._dist.endswith('_disc'):
-      shape = (*self._shape, self._bins)
-    out = self.get('out', Linear, int(np.prod(shape)), **kw)(inputs)
-    out = out.reshape(inputs.shape[:-1] + shape).astype(f32)
+    shape = self._shape 
+    if self._dist.endswith('_disc'):   # for discrete regression
+      shape = (*self._shape, self._bins)  # feature/event_dims + bins_dim
+    # 1-- to transform the input to a distribution parameterization by applying a linear layer
+    # 2-- or to get an output for distance calculation
+    out = self.get('out', Linear, int(np.prod(shape)), **kw)(inputs) # inputs (...,X) ---> out (...,np.prod(shape))
+    out = out.reshape(inputs.shape[:-1] + shape).astype(f32)   # out (...,np.prod(shape))---> out (...,shape) shape may be (Z,) or (Z,Y)...
     if self._dist in ('normal', 'trunc_normal'):
-      std = self.get('std', Linear, int(np.prod(self._shape)), **kw)(inputs)
+      std = self.get('std', Linear, int(np.prod(self._shape)), **kw)(inputs) # this line get the std params output, previous line get the mean params output
       std = std.reshape(inputs.shape[:-1] + self._shape).astype(f32)
-    if self._dist == 'symlog_mse':
-      return jaxutils.SymlogDist(out, len(self._shape), 'mse', 'sum')
-    if self._dist == 'symlog_disc':
+    if self._dist == 'symlog_mse':  # mse over symlogged values
+      return jaxutils.SymlogDist(out, len(self._shape), 'mse', 'sum') # use the last dim of out to compare the symlog distance
+    if self._dist == 'symlog_disc':    # cross entropy over two-hot encoded symlogged values
       return jaxutils.DiscDist(
           out, len(self._shape), -20, 20, jaxutils.symlog, jaxutils.symexp)
     if self._dist == 'mse':
       return jaxutils.MSEDist(out, len(self._shape), 'sum')
     if self._dist == 'normal':
       lo, hi = self._minstd, self._maxstd
-      std = (hi - lo) * jax.nn.sigmoid(std + 2.0) + lo
-      dist = tfd.Normal(jnp.tanh(out), std)
-      dist = tfd.Independent(dist, len(self._shape))
+      std = (hi - lo) * jax.nn.sigmoid(std + 2.0) + lo  # mapping the std to [lo,hi]
+      dist = tfd.Normal(jnp.tanh(out), std)  # build a batched scalar normal distribution with mean and std
+      dist = tfd.Independent(dist, len(self._shape)) # specify the last dim as part of the event space rather than separate instances
+      # get the min and max entropy of all the normal distribution
+      # the total entropy for a joint distribution consisting of multiple independent normal variables
       dist.minent = np.prod(self._shape) * tfd.Normal(0.0, lo).entropy()
       dist.maxent = np.prod(self._shape) * tfd.Normal(0.0, hi).entropy()
       return dist
@@ -577,13 +606,15 @@ class Dist(nj.Module):
       dist = tfd.Bernoulli(out)
       return tfd.Independent(dist, len(self._shape))
     if self._dist == 'onehot':
+      # here likely used for actor output
+      # trick of 1% uniform + 99% NN output ---> correspond to Unimix categoricals in page 19, Section C: Summary of Differences
       if self._unimix:
         probs = jax.nn.softmax(out, -1)
         uniform = jnp.ones_like(probs) / probs.shape[-1]
         probs = (1 - self._unimix) * probs + self._unimix * uniform
         out = jnp.log(probs)
       dist = jaxutils.OneHotDist(out)
-      if len(self._shape) > 1:
+      if len(self._shape) > 1:  # if it is multi-dim action, add the rightmost batch dim to the event space for convenient sampling
         dist = tfd.Independent(dist, len(self._shape) - 1)
       dist.minent = 0.0
       dist.maxent = np.prod(self._shape[:-1]) * jnp.log(self._shape[-1])
@@ -596,7 +627,22 @@ class Conv2D(nj.Module):
   def __init__(
       self, depth, kernel, stride=1, transp=False, act='none', norm='none',
       pad='same', bias=True, preact=False, winit='uniform', fan='avg'):
-    self._depth = depth  # output channel dim
+    """ convolutional layer wrapper
+
+    Args:
+        depth (int): output channel dim
+        kernel (int): kernel size
+        stride (int, optional): stride size. Defaults to 1.
+        transp (bool, optional): whether to use transposed convolution (up-sampling). Defaults to False.
+        act (str, optional): name of activation function. Defaults to 'none'.
+        norm (str, optional): name of normalization function. Defaults to 'none'.
+        pad (str, optional): conv padding method. Defaults to 'same'.
+        bias (bool, optional): whether add bias to conv output. Defaults to True.
+        preact (bool, optional): whether to apply normalization and activation before convolution. Defaults to False.
+        winit (str, optional): distribution for weight initialization, 'uniform' or 'normal' or 'orthogonal'. Defaults to 'uniform'.
+        fan (str, optional): for weight initialization, 'avg' or 'in' or 'out'. Defaults to 'avg'.
+    """
+    self._depth = depth  
     self._kernel = kernel
     self._stride = stride
     self._transp = transp
@@ -604,9 +650,9 @@ class Conv2D(nj.Module):
     self._norm = Norm(norm, name='norm')
     self._pad = pad.upper()
     self._bias = bias and (preact or norm == 'none')
-    self._preact = preact # whether to apply normalization and activation before convolution
-    self._winit = winit # distribution for weight initialization, 'uniform' or 'normal' or 'orthogonal'
-    self._fan = fan # for weight initialization, 'avg' or 'in' or 'out'
+    self._preact = preact 
+    self._winit = winit 
+    self._fan = fan 
 
   def __call__(self, hidden):
     if self._preact:
@@ -690,9 +736,25 @@ class Linear(nj.Module):
 class Norm(nj.Module):
 
   def __init__(self, impl):
+    """normalization for the NNs, including None, LayerNorm
+
+    Args:
+        impl (str): which normalization method to use, 'none' or 'layer'
+    """
     self._impl = impl
 
   def __call__(self, x):
+    """forward pass of the normalization method, for image input and layer norm, it applies to the last dim (Channel) dim, dtype temporarily converted to f32 during the normalization process
+
+    Args:
+        x (array): input to be normalized
+
+    Raises:
+        NotImplementedError: only 'none' and 'layer' normalization methods are implemented
+
+    Returns:
+        array: normalized output, dtype is the same as the input
+    """
     dtype = x.dtype
     if self._impl == 'none':
       return x
@@ -812,8 +874,16 @@ class Initializer:
 
 
 def get_act(name):
-  """ 
-  get the activation function by name 
+  """get the activation function by name 
+
+  Args:
+      name (str): activation function name
+
+  Raises:
+      NotImplementedError: only 'none', 'mish' and functions in jax.nn are implemented
+
+  Returns:
+      fn: normalization function itself
   """
   if callable(name):
     return name

@@ -52,23 +52,24 @@ def subsample(values, amount=1024):
 
 
 def scan(fn, inputs, start, unroll=True, modify=False):
-  """
-  two functions:
+  """ Two usages:
   1-iter though the inputs trajectory, and get the posterior and prior dict for all timesteps (containing stacked z_1:T, h_1:T,...) (prior + post)  
   2-iter though the inputs trajectory, and get the prior dict for all timesteps (containing stacked z_1:T, h_1:T,...) (prior only)
 
-  inputs: wap(action), swap(embed), swap(is_first) , each SHAPE:(T,B,.)
-  start: initial state TUPLE(post_dict, prior_dict) in WM stage, here post_dict and prior_dict are the same when init
-  or start: initial state single(prior_dict) in Actor/Critic (imagination) stage, each item in dict is of shape: (B,.)
 
-  fn: obs_step() or img_step() 
+  Args:
+      fn (function): obs_step() or img_step() 
+      inputs (tuple): swap(action), swap(embed), swap(is_first) , each SHAPE:(T,B,.)
+      start (tuple): initial state TUPLE(post_dict, prior_dict) in WM stage, here post_dict and prior_dict are the same when init \n or initial state single(prior_dict) in Actor/Critic (imagination) stage \n each item in dict is of shape: (B,.)
+      unroll (bool, optional): _description_. Defaults to True.
+      modify (bool, optional): _description_. Defaults to False.
 
   Returns:
-  (post_dict, prior_dict) or (prior_dict) containing stacked states for all timesteps, SHAPE:(T,B,.)
+      tuple: (post_dict, prior_dict) or (prior_dict) containing stacked states for all timesteps, SHAPE:(T,B,.)
+  
   """
   fn2 = lambda carry, inp: (fn(carry, inp),) * 2 # copy the fn output to become a tuple of 2 elements
   if not unroll:
-    # TODO: this line unclear
     return nj.scan(fn2, start, inputs, modify=modify)[1]  # the stacked version of traj state dict/tuple dict for all timesteps,same as unroll version
   # a "leaf" is defined as an element that cannot be further broken down in terms of the data structure hierarchy.
   length = len(jax.tree_util.tree_leaves(inputs)[0]) # Trajectory length, inputs[0]: action (T,B,.) after swapped
@@ -107,11 +108,29 @@ class OneHotDist(tfd.OneHotCategorical):
      return super()._parameter_properties(dtype)
 
   def sample(self, sample_shape=(), seed=None):
+    """sample from the distribution, and add gradient info of the distribution parameters (categorical probs) to the sample as sampling itself is not differentiable
+
+    Args:
+        sample_shape (tuple, optional): sample shape. Defaults to ().
+        seed (_type_, optional): random seed for sampling. Defaults to None.
+
+    Returns:
+        array: sample result with gradient info
+    """
     sample = sg(super().sample(sample_shape, seed))
-    probs = self._pad(super().probs_parameter(), sample.shape)
+    probs = self._pad(super().probs_parameter(), sample.shape) # probs_parameter() is the probs of the distribution, same shape as the softmax(logits)
     return sg(sample) + (probs - sg(probs)).astype(sample.dtype)
 
   def _pad(self, tensor, shape):
+    """padd the dimensions of tensor to match the dimension number of shape
+        not like 0-padding in CNN, just add dimensions to the tensor
+    Args:
+        tensor (array): to be padded
+        shape (tuple): target shape
+
+    Returns:
+        array: padded tensor
+    """
     while len(tensor.shape) < len(shape):
       tensor = tensor[None]
     return tensor
@@ -147,8 +166,17 @@ class MSEDist:
 class SymlogDist:
 
   def __init__(self, mode, dims, dist='mse', agg='sum', tol=1e-8):
+    """calculate the distance between the mode and the value after symlogged, and return the distance * (-1) as a return or log_prob 
+
+    Args:
+        mode (array): the one to be compared with
+        dims (int): the number of event/feat dimensions, if dims=1, then the event space is the last dim, it will calculate the distance between arrays along the last dim
+        dist (str, optional): distance calculation method. Defaults to 'mse'.
+        agg (str, optional): use mean or sum to aggregate the distance elements in the last dim. Defaults to 'sum'.
+        tol (_type_, optional): distance elements set to zero below this threshold. Defaults to 1e-8.
+    """
     self._mode = mode
-    self._dims = tuple([-x for x in range(1, dims + 1)])
+    self._dims = tuple([-x for x in range(1, dims + 1)])  # if dims=1, then _dims=(-1,); if dims=2, then _dims=(-1,-2)
     self._dist = dist
     self._agg = agg
     self._tol = tol
@@ -185,10 +213,20 @@ class DiscDist:
   def __init__(
       self, logits, dims=0, low=-20, high=20,
       transfwd=symlog, transbwd=symexp):
+    """distance calculation in discrete settings, here we have the symlog + two-hot encodings transformation
+
+    Args:
+        logits (array): the one to be compared with
+        dims (int, optional): number of event/feat dims. Defaults to 0.
+        low (int, optional): bin lower bound. Defaults to -20.
+        high (int, optional): bin higher bound. Defaults to 20.
+        transfwd (fn, optional): forward transformation method. Defaults to symlog.
+        transbwd (fn, optional): backward transformation method. Defaults to symexp.
+    """
     self.logits = logits
     self.probs = jax.nn.softmax(logits)
     self.dims = tuple([-x for x in range(1, dims + 1)])
-    self.bins = jnp.linspace(low, high, logits.shape[-1])
+    self.bins = jnp.linspace(low, high, logits.shape[-1]) # logits.shape[-1] is the number of bins
     self.low = low
     self.high = high
     self.transfwd = transfwd
@@ -203,24 +241,39 @@ class DiscDist:
     return self.transbwd((self.probs * self.bins).sum(-1))
 
   def log_prob(self, x):
-    x = self.transfwd(x)
-    below = (self.bins <= x[..., None]).astype(jnp.int32).sum(-1) - 1
+    """calculate log_prob (-1*cross entropy loss), Equation (8) + (9) + (10)
+
+    Args:
+        x (array): input array, should be 1-dim smaller than logits (x should not have the bin dim in the end)
+
+    Returns:
+        array: cross entropy loss, (1-dim smaller than input x) sum over all classes and the last dim of x (event/feat dim)
+    """
+    x = self.transfwd(x) # apply symlog to x
+    # calculate the two-hot encoding for x
+    below = (self.bins <= x[..., None]).astype(jnp.int32).sum(-1) - 1  # find the nearest bin index below each element in last dim of x
     above = len(self.bins) - (
-        self.bins > x[..., None]).astype(jnp.int32).sum(-1)
+        self.bins > x[..., None]).astype(jnp.int32).sum(-1) # find the nearest bin index above each element in last dim of x
     below = jnp.clip(below, 0, len(self.bins) - 1)
     above = jnp.clip(above, 0, len(self.bins) - 1)
-    equal = (below == above)
+    # below and above has same shape as x
+    equal = (below == above) # identify the out-of-range elements when below==above
+    # calculate the distance to the nearest bin below and above, assign 1 to the out-of-range elements
     dist_to_below = jnp.where(equal, 1, jnp.abs(self.bins[below] - x))
     dist_to_above = jnp.where(equal, 1, jnp.abs(self.bins[above] - x))
     total = dist_to_below + dist_to_above
+    # get the distance weight (0%-100%, abstract for how close to the left/right bin boundary) to the nearest bin below and above
     weight_below = dist_to_above / total
     weight_above = dist_to_below / total
+    # get the two-hot encoding for x, weight_below/above same shape as x
+    # target shape: (x.shape, len(self.bins))
     target = (
         jax.nn.one_hot(below, len(self.bins)) * weight_below[..., None] +
         jax.nn.one_hot(above, len(self.bins)) * weight_above[..., None])
+    # this line is basically calculation the log of the softmax of the logits
     log_pred = self.logits - jax.scipy.special.logsumexp(
         self.logits, -1, keepdims=True)
-    return (target * log_pred).sum(-1).sum(self.dims)
+    return (target * log_pred).sum(-1).sum(self.dims) # -1* cross entropy loss, sum over all classes and the last dim of x (event/feat dim)
 
 
 def video_grid(video):
