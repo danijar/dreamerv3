@@ -138,7 +138,7 @@ class WorldModel(nj.Module):
     self.rssm = nets.RSSM(**config.rssm, name='rssm')
     self.heads = {
         'decoder': nets.MultiDecoder(shapes, **config.decoder, name='dec'),
-        'reward': nets.MLP((), **config.reward_head, name='rew'),
+        'reward': nets.MLP((), **config.reward_head, name='rew'),  #shape is () not None, will eventually output distance measure object
         'cont': nets.MLP((), **config.cont_head, name='cont')}
     # TODO: need to look into the Optimizer class
     self.opt = jaxutils.Optimizer(name='model_opt', **config.model_opt)

@@ -120,37 +120,50 @@ import jax.lax
 low=0.0
 high=1.0
 logits=jnp.array([[0.1,0.2,0.3,0.4],[0.5,0.6,0.7,0.8],[0.9,1.0,1.1,1.2]],dtype=jnp.float32)
+
+split_indices=jnp.array([1,2],dtype=jnp.int32)
+yy=jnp.split(logits,split_indices,axis=-1)
+print(yy)
+
 x=jnp.array([0.1,0.2,0.3],dtype=jnp.float32)
+# y=x[..., None]
+# print(jnp.concatenate([x,y],axis=-1))
 bins = jnp.linspace(low, high, logits.shape[-1])
 print("bins",bins)
 below = (bins <= x[..., None]).astype(jnp.int32).sum(-1) - 1
 print(below)
 
-import tensorflow_probability as tfp
-import tensorflow as tf
+# import tensorflow_probability as tfp
+# import tensorflow as tf
 
-# Enable eager execution for immediate result outputs (not needed if using TF2.x).
-tf.compat.v1.enable_eager_execution()
+# # Enable eager execution for immediate result outputs (not needed if using TF2.x).
+# tf.compat.v1.enable_eager_execution()
 
-tfd = tfp.distributions
+# tfd = tfp.distributions
 
-# Define probabilities for each category/class.
-# These should sum to 1 across the last dimension.
-probs = [0.1, 0.6, 0.3]  # Example probabilities for 3 categories.
-probs=jnp.array(probs,dtype=jnp.float32)
-probs=probs[None,...]
-# Create a OneHotCategorical distribution with specified probabilities.
-dist = tfd.OneHotCategorical(probs=probs)
+# # Define probabilities for each category/class.
+# # These should sum to 1 across the last dimension.
+# probs = [0.1, 0.6, 0.3]  # Example probabilities for 3 categories.
+# probs=jnp.array(probs,dtype=jnp.float32)
+# probs=probs[None,...]
+# # Create a OneHotCategorical distribution with specified probabilities.
+# dist = tfd.OneHotCategorical(probs=probs)
 
-# Sample from the distribution.
-sample = dist.sample()
+# # Sample from the distribution.
+# sample = dist.sample()
 
-# Print the output sample and its shape.
-print("Sample:")
-print(sample.numpy())
-print("Sample Shape:", sample.shape)
+# # Print the output sample and its shape.
+# print("Sample:")
+# print(sample.numpy())
+# print("Sample Shape:", sample.shape)
 
-# Print the probabilities and their shape.
-print("Probabilities:")
-print(dist.probs_parameter().numpy())
-print("Probabilities Shape:", dist.probs_parameter().shape)
+# # Print the probabilities and their shape.
+# print("Probabilities:")
+# print(dist.probs_parameter().numpy())
+# print("Probabilities Shape:", dist.probs_parameter().shape)
+
+# aaa=()
+# print(aaa is None)
+# x=-0.5
+# silu=x*jax.nn.sigmoid(x)
+# print(x,silu)

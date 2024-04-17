@@ -24,7 +24,7 @@ class RSSM(nj.Module):
     self._deter = deter # deterministic latent state size, h_t
     self._stoch = stoch # stochastic latent state size, z_t
     self._classes = classes # number of classes for discrete latent state, if 0, it is continuous
-    self._unroll = unroll
+    self._unroll = unroll  #TODO: what is this?
     self._initial = initial
     self._unimix = unimix
     self._action_clip = action_clip
@@ -255,7 +255,7 @@ class MultiEncoder(nj.Module):
       symlog_inputs=False, minres=4, **kw):
     """  
     Args:
-    shapes: dict of shapes in tuple (obs_shape)
+    shapes: dict of shapes in tuple (obs_shape) 
     """
     excluded = ('is_first', 'is_last')
     shapes = {k: v for k, v in shapes.items() if (
@@ -275,7 +275,7 @@ class MultiEncoder(nj.Module):
     else:
       raise NotImplementedError(cnn)
     if self.mlp_shapes:
-      self._mlp = MLP(None, mlp_layers, mlp_units, dist='none', **mlp_kw)
+      self._mlp = MLP(None, mlp_layers, mlp_units, dist='none', **mlp_kw) # here the shape is None, so the output is the array, not the distance measure object
 
   def __call__(self, data):
     """Forward pass of the encoder,
@@ -284,10 +284,10 @@ class MultiEncoder(nj.Module):
         data (dict): input, should contain images for CNN or vectors for MLP
 
     Returns:
-        array: _description_
+        array: encoder output, shape:(batch_dims, event_dims)
     """
-    some_key, some_shape = list(self.shapes.items())[0]  #flatten dict to list of tuples of key and value and pick the first tuple
-    batch_dims = data[some_key].shape[:-len(some_shape)] #TODO, why data has the same key, is it some dicts? does it have mutiple batch dim?
+    some_key, some_shape = list(self.shapes.items())[0]  #flatten dict to list of tuples of key and value and pick the first tuple, I guess it contain the event shape
+    batch_dims = data[some_key].shape[:-len(some_shape)] # extract batch dims, TODO, need to identify which key is in the data and self.shapes
     data = {
         k: v.reshape((-1,) + v.shape[len(batch_dims):])
         for k, v in data.items()}
@@ -305,7 +305,7 @@ class MultiEncoder(nj.Module):
       inputs = jaxutils.cast_to_compute(inputs)
       outputs.append(self._mlp(inputs))
     outputs = jnp.concatenate(outputs, -1)
-    outputs = outputs.reshape(batch_dims + outputs.shape[1:])
+    outputs = outputs.reshape(batch_dims + outputs.shape[1:]) # should be useless as a double-check, TODO:whether batch_dims is one-dim and the event shape is also one-dim (B,E)
     return outputs
 
 
@@ -317,6 +317,7 @@ class MultiDecoder(nj.Module):
       image_dist='mse', vector_dist='mse', resize='stride', bins=255,
       outscale=1.0, minres=4, cnn_sigmoid=False, **kw):
     excluded = ('is_first', 'is_last', 'is_terminal', 'reward')
+    # TODO: check what shapes contain
     shapes = {k: v for k, v in shapes.items() if k not in excluded}
     self.cnn_shapes = {
         k: v for k, v in shapes.items()
@@ -331,8 +332,8 @@ class MultiDecoder(nj.Module):
     mlp_kw = {**kw, 'dist': vector_dist, 'outscale': outscale, 'bins': bins}
     if self.cnn_shapes:
       shapes = list(self.cnn_shapes.values())
-      assert all(x[:-1] == shapes[0][:-1] for x in shapes)
-      shape = shapes[0][:-1] + (sum(x[-1] for x in shapes),)
+      assert all(x[:-1] == shapes[0][:-1] for x in shapes) # check the batch dims are same across
+      shape = shapes[0][:-1] + (sum(x[-1] for x in shapes),)  
       if cnn == 'resnet':
         self._cnn = ImageDecoderResnet(
             shape, cnn_depth, cnn_blocks, resize, **cnn_kw, name='cnn')
@@ -346,7 +347,7 @@ class MultiDecoder(nj.Module):
 
   def __call__(self, inputs, drop_loss_indices=None):
     """  
-    TODO: need to identify the shape of the inputs dict and what is the drop_loss_indices
+    TODO: need to identify the shape of the inputs dict (is the batch dim only B or B,T) and what is the drop_loss_indices
     """
     features = self._inputs(inputs)
     dists = {}
@@ -354,22 +355,38 @@ class MultiDecoder(nj.Module):
       feat = features
       if drop_loss_indices is not None:
         feat = feat[:, drop_loss_indices]
-      flat = feat.reshape([-1, feat.shape[-1]])
-      output = self._cnn(flat)
-      output = output.reshape(feat.shape[:-1] + output.shape[1:])
-      split_indices = np.cumsum([v[-1] for v in self.cnn_shapes.values()][:-1])
-      means = jnp.split(output, split_indices, -1)
+      flat = feat.reshape([-1, feat.shape[-1]]) # flat shape: (B,x)
+      output = self._cnn(flat)  # output shape: (B,H,W,C)
+      # I feel this one is another double check of the shape, should be useless
+      output = output.reshape(feat.shape[:-1] + output.shape[1:]) # feat.shape[:-1] should be the batch dims, output.shape[1:] should be the event dims 
+      # [:-1] This slice omits the last element of the list. This is necessary because when splitting an array at specified indices with np.split, you do not need to specify the final index since it's implied to be the end of the array.
+      split_indices = np.cumsum([v[-1] for v in self.cnn_shapes.values()][:-1]) # calculate the split indices positions for the output in depth channel
+      means = jnp.split(output, split_indices, -1)   # output a list of arrays
+
+      # dict.update() is more efficient than dict[key] = value for multiple key-value pairs, it can add all of them simultaneously.
       dists.update({
-          key: self._make_image_dist(key, mean)
+          key: self._make_image_dist(key, mean)   # the mean of mean is around 0.5
           for (key, shape), mean in zip(self.cnn_shapes.items(), means)})
     if self.mlp_shapes:
       dists.update(self._mlp(features))
-    return dists
+    return dists  # return a dict of distance measure objects
 
   def _make_image_dist(self, name, mean):
+    """create image distribution / distance measure object
+
+    Args:
+        name (str): arbitrary name for the image distribution
+        mean (array): mean of the image distribution, shape (B,H,W,C) or (B,T,H,W,C)
+
+    Raises:
+        NotImplementedError: image_distance method should be one of 'normal', 'mse'
+
+    Returns:
+        obj: image distance measure object
+    """
     mean = mean.astype(f32)
     if self._image_dist == 'normal':
-      return tfd.Independent(tfd.Normal(mean, 1), 3)
+      return tfd.Independent(tfd.Normal(mean, 1), 3) # (H,W,C) now is the event shape
     if self._image_dist == 'mse':
       return jaxutils.MSEDist(mean, 3, 'sum')
     raise NotImplementedError(self._image_dist)
@@ -378,10 +395,18 @@ class MultiDecoder(nj.Module):
 class ImageEncoderResnet(nj.Module):
 
   def __init__(self, depth, blocks, resize, minres, **kw):
+    """wrapper for the ResNet image encoder
+
+    Args:
+        depth (int): tensor depth (depth channel) of the first stage
+        blocks (int): how many blocks in each stage, each block contains two conv layers with a skip connection
+        resize (str): resizing/pooling method between stages, one of 'stride', 'stride3', 'mean', 'max'
+        minres (int): min size H W in the ResNet blocks, usually in the last stage
+    """
     self._depth = depth
     self._blocks = blocks
     self._resize = resize
-    self._minres = minres # min size H W in the ResNet blocks
+    self._minres = minres 
     self._kw = kw
 
   def __call__(self, x):
@@ -439,6 +464,16 @@ class ImageEncoderResnet(nj.Module):
 class ImageDecoderResnet(nj.Module):
 
   def __init__(self, shape, depth, blocks, resize, minres, sigmoid, **kw):
+    """wrapper for the ResNet image decoder, output should be an image
+
+    Args:
+        shape (tuple): feature/event shape of the output image ---(H,W,C)
+        depth (int): depth of the first stage of the original ImageEncoderResnet
+        blocks (int): how many blocks in each stage, each block contains two conv layers with a skip connection
+        resize (str): resizing/pooling method between stages, one of 'stride', 'stride3', 'mean', 'max'
+        minres (int): min size H W in the ResNet blocks, here for decoder it is in the first stage
+        sigmoid (bool): whether to apply sigmoid to the output image
+    """
     self._shape = shape
     self._depth = depth
     self._blocks = blocks
@@ -448,10 +483,21 @@ class ImageDecoderResnet(nj.Module):
     self._kw = kw
 
   def __call__(self, x):
+    """forward pass of the ImageDecoderResnet
+
+    Args:
+        x (array): input latent feature array with shape (B, x)
+
+    Raises:
+        NotImplementedError: resize method should be one of 'stride', 'stride3', 'resize'
+
+    Returns:
+        array: output image with shape (B,H,W,C), range [0,1]
+    """
     stages = int(np.log2(self._shape[-2]) - np.log2(self._minres))
-    depth = self._depth * 2 ** (stages - 1)
+    depth = self._depth * 2 ** (stages - 1) # calculate the depth of the first stage of the decoder from the one of the encoder
     x = jaxutils.cast_to_compute(x)
-    x = self.get('in', Linear, (self._minres, self._minres, depth))(x)
+    x = self.get('in', Linear, (self._minres, self._minres, depth))(x)  # linear layer to reshape the input to the first stage of the decoder ,shape:(B,H,W,D)
     for i in range(stages):
       for j in range(self._blocks):
         skip = x
@@ -460,33 +506,33 @@ class ImageDecoderResnet(nj.Module):
         x = self.get(f's{i}b{j}conv2', Conv2D, depth, 3, **kw)(x)
         x += skip
         # print(x.shape)
-      depth //= 2
+      depth //= 2   # halve the depth of the next stage
       kw = {**self._kw, 'preact': False}
       if i == stages - 1:
-        kw = {}
-        depth = self._shape[-1]
+        kw = {}     # clear the specified keywords for Conv2D in the last stage
+        depth = self._shape[-1]  
       if self._resize == 'stride':
-        x = self.get(f's{i}res', Conv2D, depth, 4, 2, transp=True, **kw)(x)
+        x = self.get(f's{i}res', Conv2D, depth, 4, 2, transp=True, **kw)(x) # transp=True for transposed convolution, H,W is doubled
       elif self._resize == 'stride3':
         s = 3 if i == stages - 1 else 2
         k = 5 if i == stages - 1 else 4
-        x = self.get(f's{i}res', Conv2D, depth, k, s, transp=True, **kw)(x)
+        x = self.get(f's{i}res', Conv2D, depth, k, s, transp=True, **kw)(x) #H,W is x3 in last stage or x2
       elif self._resize == 'resize':
-        x = jnp.repeat(jnp.repeat(x, 2, 1), 2, 2)
+        x = jnp.repeat(jnp.repeat(x, 2, 1), 2, 2)     # repeat x first along H, then along W-->(B,2*H,2*W,c)  
         x = self.get(f's{i}res', Conv2D, depth, 3, 1, **kw)(x)
       else:
         raise NotImplementedError(self._resize)
-    if max(x.shape[1:-1]) > max(self._shape[:-1]):
+    if max(x.shape[1:-1]) > max(self._shape[:-1]): # if the output size (H,W) is larger than the target size, crop the output
       padh = (x.shape[1] - self._shape[0]) / 2
       padw = (x.shape[2] - self._shape[1]) / 2
       x = x[:, int(np.ceil(padh)): -int(padh), :]
       x = x[:, :, int(np.ceil(padw)): -int(padw)]
     # print(x.shape)
-    assert x.shape[-3:] == self._shape, (x.shape, self._shape)
+    assert x.shape[-3:] == self._shape, (x.shape, self._shape) # check the H,W,C of the output image matches the target shape
     if self._sigmoid:
       x = jax.nn.sigmoid(x)
-    else:
-      x = x + 0.5
+    else:          # x after layer norm is standardized to mean 0 and std 1, then silu makes it mean concentrated around 0
+      x = x + 0.5  # move the x mean from silu act output closer to 0.5 (prepare for creating image distribution), x range is influenced by act and norm in Conv2d
     return x
 
 
@@ -495,6 +541,16 @@ class MLP(nj.Module):
   def __init__(
       self, shape, layers, units, inputs=['tensor'], dims=None,
       symlog_inputs=False, **kw):
+    """MLP wrapper
+
+    Args:
+        shape (int,tuple,dict): feature/event shape of the output
+        layers (int): number of layers in the MLP
+        units (int): number of units per layer
+        inputs (list, optional): specified data keys. Defaults to ['tensor'].
+        dims (str, optional): target dimension key, all inputs will be reshaped to make sure not exceeding the target dim numbers. Defaults to None.
+        symlog_inputs (bool, optional): whether to use symlog to inputs. Defaults to False.
+    """
     assert shape is None or isinstance(shape, (int, tuple, dict)), shape
     if isinstance(shape, int):
       shape = (shape,)
@@ -505,18 +561,30 @@ class MLP(nj.Module):
     self._symlog_inputs = symlog_inputs
     distkeys = (
         'dist', 'outscale', 'minstd', 'maxstd', 'outnorm', 'unimix', 'bins')
+    # separate the dense (for building linear layers) and dist parameters (for building distance measure objects) 
     self._dense = {k: v for k, v in kw.items() if k not in distkeys}
     self._dist = {k: v for k, v in kw.items() if k in distkeys}
 
   def __call__(self, inputs):
-    feat = self._inputs(inputs)  # dict to concated array
-    if self._symlog_inputs:
+    """MLP forward pass
+
+    Args:
+        inputs (dict): input data
+
+    Raises:
+        ValueError: feature/event shape should be int, tuple or dict
+
+    Returns:
+        array/obj: if event shape is None, return the output array (dims number should be same as input, batch dims should be same), otherwise return the distance measure object
+    """
+    feat = self._inputs(inputs)  # dict to concated array after reshaping and transforming the inputs
+    if self._symlog_inputs:          # encoder input is symlog transformed acc. to Page 19, Section C--> Symlog predictions
       feat = jaxutils.symlog(feat)
     x = jaxutils.cast_to_compute(feat)
-    x = x.reshape([-1, x.shape[-1]])  # flatten the input but keep the last dim
+    x = x.reshape([-1, x.shape[-1]])  # flatten the input but keep the last dim of x
     for i in range(self._layers):
       x = self.get(f'h{i}', Linear, self._units, **self._dense)(x)
-    x = x.reshape(feat.shape[:-1] + (x.shape[-1],))  # recover back to the input shape
+    x = x.reshape(feat.shape[:-1] + (x.shape[-1],))  # recover back to the input shape, TODO: is the batch dim of feat same as the output x of linear layers?
     if self._shape is None:
       return x
     # if the event shape is not None, then process further to get the distance measure object from the output x
@@ -539,7 +607,7 @@ class Dist(nj.Module):
     """ a wrapper for different distance/log_prob types, to get the distance measure using different methods
         including processing for discrete regression result, see Critic Learning section in the paper
     Args:
-        shape (tuple): event shape of the distribution, usually length=1
+        shape (tuple): event shape of the distribution, usually length=1; event shape: the shape of the output feature of the last layer; e.g. output 1024 dim embedding, (1024,) is the event shape
         dist (str, optional): distance method. Defaults to 'mse'.
         outscale (float, optional): _description_. Defaults to 0.1.
         outnorm (bool, optional): _description_. Defaults to False.
@@ -729,7 +797,7 @@ class Linear(nj.Module):
       bias = jaxutils.cast_to_compute(bias)
       x += bias
     if len(self._units) > 1:  # When the length of self._units is more than one, the output should be reshaped into a shape that is not simply flat but has multiple dimensions.
-      x = x.reshape(x.shape[:-1] + self._units) # x:(batch_size, temp_out_features)--->(batch_size, unit1, unit2)
+      x = x.reshape(x.shape[:-1] + self._units) # x:(batch_size, temp_out_features)--->(batch_size, unit1, unit2,...), e.g. in image decoder, reshape flattened vector to image shape with H,W,C
     x = self.get('norm', Norm, self._norm)(x)
     x = self._act(x)
     return x
@@ -739,6 +807,7 @@ class Norm(nj.Module):
 
   def __init__(self, impl):
     """normalization for the NNs, including None, LayerNorm
+    Layer normalization is a technique used to standardize the inputs across features for each data sample individually, which can help stabilize the learning process 
 
     Args:
         impl (str): which normalization method to use, 'none' or 'layer'
@@ -747,7 +816,7 @@ class Norm(nj.Module):
 
   def __call__(self, x):
     """forward pass of the normalization method, for image input and layer norm, it applies to the last dim (Channel) dim, dtype temporarily converted to f32 during the normalization process
-
+    layer norm makes the output to have zero mean and unit variance
     Args:
         x (array): input to be normalized
 
@@ -773,17 +842,29 @@ class Norm(nj.Module):
 class Input:
 
   def __init__(self, keys=['tensor'], dims=None):
-    """  
-    speicify required keys and desired dim number (given a specific key and use its value dim as target, default is the first key in key lists) for input values
+    """speicify required keys and desired dim-reshaping target (or given a specific key and use its value dim as target, default is the first key in key lists) for input values
+    Then it will be make sure all the inputs dim numbers are not exceeding the target dim.
+
+    Args:
+        keys (list, optional): specified data keys. Defaults to ['tensor'].
+        dims (str, optional): desired dim-reshaping target key. Defaults to None.
     """
     assert isinstance(keys, (list, tuple)), keys
     self._keys = tuple(keys)
     self._dims = dims or self._keys[0]
 
   def __call__(self, inputs):
-    """  
-    check whether keys missing in the input dict, apply softmax if specified in key and reshape the value to the desired (dims),
+    """check whether keys missing in the input dict, apply softmax if specified in key and reshape the value to the target (dims) if exceeded the target dim number,
     at last concat all required values by self._keys together
+
+    Args:
+        inputs (dict): input data
+
+    Raises:
+        KeyError: all keys in self._keys (specified data keys) must in the input dict
+
+    Returns:
+        array: concat all required values by self._keys along last dim together, the batch dims should be same as the input data, otherwise concat will raise error
     """
     if not isinstance(inputs, dict):
       inputs = {'tensor': inputs}

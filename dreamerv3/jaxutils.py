@@ -108,7 +108,8 @@ class OneHotDist(tfd.OneHotCategorical):
      return super()._parameter_properties(dtype)
 
   def sample(self, sample_shape=(), seed=None):
-    """sample from the distribution, and add gradient info of the distribution parameters (categorical probs) to the sample as sampling itself is not differentiable
+    """sample from the distribution, and add gradient info of the distribution parameters (categorical probs) to the sample as sampling itself is not differentiable.
+    The gradient trick is at the bottom of page 4 in the paper
 
     Args:
         sample_shape (tuple, optional): sample shape. Defaults to ().
@@ -139,6 +140,13 @@ class OneHotDist(tfd.OneHotCategorical):
 class MSEDist:
 
   def __init__(self, mode, dims, agg='sum'):
+    """Mean Squared Error (MSE) distance calculation
+
+    Args:
+        mode (array): the one to be compared with, target array
+        dims (int): the number of event/feat dimensions, if dims=1, then the event space is the last dim, it will calculate the distance between arrays along the last dim
+        agg (str, optional): use mean or sum to aggregate the distance elements in the last dim. Defaults to 'sum'.
+    """
     self._mode = mode
     self._dims = tuple([-x for x in range(1, dims + 1)])
     self._agg = agg
