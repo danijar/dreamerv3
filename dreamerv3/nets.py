@@ -21,21 +21,38 @@ class RSSM(nj.Module):
   def __init__(
       self, deter=1024, stoch=32, classes=32, unroll=False, initial='learned',
       unimix=0.01, action_clip=1.0, **kw):
-    self._deter = deter # deterministic latent state size, h_t
-    self._stoch = stoch # stochastic latent state size, z_t
-    self._classes = classes # number of classes for discrete latent state, if 0, it is continuous
-    self._unroll = unroll  #TODO: what is this?
+    """wrapper for the Recurrent State Space Model (RSSM) in DreamerV3
+
+    Args:
+        deter (int, optional): deterministic latent state size, h_t. Defaults to 1024.
+        stoch (int, optional): stochastic latent state size, z_t. Defaults to 32.
+        classes (int, optional): number of classes for discrete latent state, if 0, it is continuous. Defaults to 32.
+        unroll (bool, optional): whether to manually process the iteration over sequence using for loop. If false, it will use a nj.scan function to handle it. Defaults to False.
+        initial (str, optional): initialization method for state dict. Defaults to 'learned'.
+        unimix (float, optional): whether to use the 1% uniform + 99% NN output trick for discrete problem. Defaults to 0.01.
+        action_clip (float, optional): action clipping threshold. Defaults to 1.0.
+    """
+    self._deter = deter 
+    self._stoch = stoch 
+    self._classes = classes 
+    self._unroll = unroll  
     self._initial = initial
     self._unimix = unimix
     self._action_clip = action_clip
     self._kw = kw
 
   def initial(self, bs):
-    """ 
-    Initialize the state of the model
-
+    """Initialize the state of the model.
     stoch is a sample of prob (logit /mean+std) ,can be the mode of the prob distribution 
-    Return: a dict of the initial state
+
+    Args:
+        bs (int): batch size
+
+    Raises:
+        NotImplementedError: initial method should be one of 'zeros', 'learned'
+
+    Returns:
+        dict: a dict of the initial state
     """
     if self._classes:
       # if it is dicrete/classification, the state includes a one-hot vector logits for each dim in stochastic latent state
@@ -61,14 +78,20 @@ class RSSM(nj.Module):
       raise NotImplementedError(self._initial)
 
   def observe(self, embed, action, is_first, state=None):
-    """  
-    Fig.3(a) --- use real-world embedded observation and action trajectory, for World Model learning
-   
-    action: (B,T,A), A is the action dim
-    Return:
-    (posterior dict, prior dict) for all timesteps (containing stacked z_1:T, h_1:T,...) each SHAPE: (B,T,.)
+    """Fig.3(a) ---Here perform forward pass using real-world embedded observation and action trajectory, for World Model learning
+
+    Args:
+        embed (array): embedded observation, shape: (B,T,E), E is the event dim
+        action (array): (B,T,A), A is the action dim
+        is_first (bool): boolean indicating whether the current step is the first step in an episode, shape: (B,T)
+        state (dict, optional): state dict used as init state. Defaults to None.
+
+    Returns:
+        tuple: (posterior dict, prior dict) for all timesteps (containing stacked z_1:T, h_1:T,...) each SHAPE: (B,T,.)
     different from the tuple of dicts having individual z_t, h_t,... as in the output of obs_step
+    
     """
+
     swap = lambda x: x.transpose([1, 0] + list(range(2, len(x.shape))))
     if state is None:
       state = self.initial(action.shape[0])
@@ -81,11 +104,15 @@ class RSSM(nj.Module):
     return post, prior
 
   def imagine(self, action, state=None):
-    """  
-    Fig.3(b) --- use imagined state and action trajectory, for Actor-Critic learning
-    action: (B,T,A), A is the action dim
-    Return:
-    prior dict for all timesteps (containing stacked est_z_1:T, h_1:T,...) each SHAPE: (B,T,.)
+    """Fig.3(b) ---Forward pass using imagined state and action trajectory, for Actor-Critic learning
+
+    Args:
+        action (array): (B,T,A), A is the action dim
+        state (dict, optional): initial state dict. Defaults to None.
+
+    Returns:
+        dict: prior dict for all timesteps (containing stacked est_z_1:T, h_1:T,...) each SHAPE: (B,T,.)
+    
     """
     swap = lambda x: x.transpose([1, 0] + list(range(2, len(x.shape))))
     state = self.initial(action.shape[0]) if state is None else state
@@ -96,32 +123,44 @@ class RSSM(nj.Module):
     return prior
 
   def get_dist(self, state, argmax=False):
-    """ 
-    convert logits / mean+std in state dict to a tensor flow distribution 
+    """convert logits / mean+std in state dict to a tensor flow distribution 
+
+    Args:
+        state (dict): description of the distribution of the stochastic latent state--- containing array for (mean+ std/ logit)
+        argmax (bool, optional): no use. Defaults to False.
+
+    Returns:
+        obj: a tensor flow distribution object
     """
     if self._classes:
       logit = state['logit'].astype(f32)
-      return tfd.Independent(jaxutils.OneHotDist(logit), 1) # specifying that the last dimension of your distribution's output (here, the categorical outcomes) should be treated as part of the independent event space rather than separate instances
+      return tfd.Independent(jaxutils.OneHotDist(logit), 1) # the latent state feature dim (-2) be added to event dimension
     else:
       mean = state['mean'].astype(f32)
       std = state['std'].astype(f32)
       return tfd.MultivariateNormalDiag(mean, std)
 
   def obs_step(self, prev_state, prev_action, embed, is_first):
-    """  
-    prev_state: {z_t-1, h_t-1, z_prob_t-1} , each SHAPE: (B,.)
-    prev_action: a_t-1
-    embed: intermediate representation of the observation
-    is_first: boolean indicating whether the current state is the first state in an episode
+    """observation step, forward pass of sequence model, encoder (the final step of the encoder after getting embedding), dynamics predictor in Equation (3)
+
+    Args:
+        prev_state (dict): posterior {z_t-1, h_t-1, z_prob_t-1}, each SHAPE: (B,...)
+        prev_action (array): a_t-1, SHAPE: (B,A)
+        embed (array): intermediate representation of the observation, SHAPE: (B,E)
+        is_first (bool): boolean indicating whether the current state is the first state in an episode, SHAPE: (B,)
+
+    Returns:
+        tuple: posterior dict:{z_t, h_t, z_prob_t}, prior dict:{ est_z_t,h_t,est_z_prob_t}
     
-    Output: posterior dict:{z_t, h_t, z_prob_t}, prior dict:{ est_z_t,h_t,est_z_prob_t}
     """
     is_first = cast(is_first)
     prev_action = cast(prev_action)
     if self._action_clip > 0.0: # clip the action above a certain value 
       prev_action *= sg(self._action_clip / jnp.maximum(
           self._action_clip, jnp.abs(prev_action)))
-    prev_state, prev_action = jax.tree_util.tree_map(             # ensure that the prev_state and prev_action reset to 0 at the start of each new episode or sequence.
+    # the following two lines are to ensure that the prev_state and prev_action reset to 0, if they happen to be the first timestep/state in an episode
+    # and if it is the case, then the prev_state will be initialized as the initial state
+    prev_state, prev_action = jax.tree_util.tree_map(             # ensure that the prev_state and prev_action reset to 0 at the start of each new episode.
         lambda x: self._mask(x, 1.0 - is_first), (prev_state, prev_action))   
     prev_state = jax.tree_util.tree_map(
         lambda x, y: x + self._mask(y, is_first),
@@ -136,11 +175,14 @@ class RSSM(nj.Module):
     return cast(post), cast(prior)
 
   def img_step(self, prev_state, prev_action):
-    """  
-    Here performs the dynamics model (GRU) and the dynamics predictor (Linear)
+    """Here performs the dynamics model (GRU) and the dynamics predictor (Linear)--imagination step
 
-    Input: { z_t-1,h_t-1, z_prob_t-1}, a_t-1  
-    Output: { est_z_t,h_t,est_z_prob_t}
+    Args:
+        prev_state (dict): { z_t-1,h_t-1, z_prob_t-1}
+        prev_action (array): a_t-1  
+
+    Returns:
+        dict: prior state dict---{ est_z_t,h_t,est_z_prob_t}
     """
     prev_stoch = prev_state['stoch']
     prev_action = cast(prev_action)
@@ -186,9 +228,15 @@ class RSSM(nj.Module):
     return deter, deter
 
   def _stats(self, name, x):
-    """ 
-    given input x, apply a Linear layer to x and return a prob. distribution of the stochastic latent state.
+    """given input x, apply a Linear layer to x and return a prob. distribution of the stochastic latent state.
     Here have the 1% uniform + 99% NN output trick for discrete problem (in dynamics and encoder and actor, see Unimix categoricals in page 19, Section C: Summary of Differences)
+
+    Args:
+        name (str): name of the stats operation
+        x (array): input embedding/feature array , shape: (B,...)
+
+    Returns:
+        dict: description of the distribution of the stochastic latent state--- containing array for (mean+ std/ logit)
     """
     if self._classes:
       x = self.get(name, Linear, self._stoch * self._classes)(x)
@@ -197,24 +245,41 @@ class RSSM(nj.Module):
         probs = jax.nn.softmax(logit, -1)
         uniform = jnp.ones_like(probs) / probs.shape[-1]
         probs = (1 - self._unimix) * probs + self._unimix * uniform
-        logit = jnp.log(probs)
-      stats = {'logit': logit}
+        logit = jnp.log(probs)  # convert probs to logit , convenient for using softmax in the following steps
+      stats = {'logit': logit}  
       return stats
     else:
       x = self.get(name, Linear, 2 * self._stoch)(x)
-      mean, std = jnp.split(x, 2, -1) # split the array x into two parts along the last axis 
+      mean, std = jnp.split(x, 2, -1) # split the array x into two parts (half_1 | half_2) along the last axis 
       std = 2 * jax.nn.sigmoid(std / 2) + 0.1
       return {'mean': mean, 'std': std}
 
   def _mask(self, value, mask):
-    """ 
-    applies a batch-wise mask to a multi-dimensional array, (e.g. some batches are masked out)
+    """applies a batch-wise mask to a multi-dimensional array, (e.g. some batches are masked out)
+
+    Args:
+        value (array): the array to be masked, shape: (B,...)
+        mask (array): the mask array, shape: (B,)
+
+    Returns:
+        array: the masked array, shape: (B,...)
     """
     return jnp.einsum('b...,b->b...', value, mask.astype(value.dtype))
 
   def dyn_loss(self, post, prior, impl='kl', free=1.0):
-    """  
-    Equation (5).2 in the paper, the loss function for the dynamics model
+    """Equation (5).2 in the paper, the loss function for the dynamics predictor, prediction loss
+
+    Args:
+        post (dict): posterior state dict of a sequence, not just a single timestep
+        prior (dict): prior state dict of a sequence, not just a single timestep
+        impl (str, optional): dynamic prediction loss method. Defaults to 'kl'.
+        free (float, optional): freebits trick, dyn_loss clipping threshold (lowest bound). Defaults to 1.0.
+
+    Raises:
+        NotImplementedError: loss method should be one of 'kl', 'logprob'
+
+    Returns:
+        array: dynamics prediction loss over the sequence, shape: (B,T)
     """
     if impl == 'kl':
       loss = self.get_dist(sg(post)).kl_divergence(self.get_dist(prior))
@@ -227,8 +292,19 @@ class RSSM(nj.Module):
     return loss
 
   def rep_loss(self, post, prior, impl='kl', free=1.0):
-    """  
-    Equation (5).3 in the paper, the loss function for the dynamics model
+    """Equation (5).3 in the paper, the loss function for the encoder, representation loss
+
+    Args:
+        post (dict): posterior state dict of a sequence, not just a single timestep
+        prior (dict): prior state dict of a sequence, not just a single timestep
+        impl (str, optional): dynamic prediction loss method. Defaults to 'kl'.
+        free (float, optional): freebits trick, dyn_loss clipping threshold (lowest bound). Defaults to 1.0.
+
+    Raises:
+        NotImplementedError: loss method should be one of 'kl', 'uniform', 'entropy' or 'none'(zero loss)
+
+    Returns:
+        array: representation loss over the sequence, shape: (B,T)
     """
     if impl == 'kl':
       loss = self.get_dist(post).kl_divergence(self.get_dist(sg(prior)))
@@ -261,6 +337,7 @@ class MultiEncoder(nj.Module):
     shapes = {k: v for k, v in shapes.items() if (
         k not in excluded and not k.startswith('log_'))}
     # Extract the shapes used for CNN and MLP by matching the cnn/mlp_key from the beginning of the key in dict
+    # for CNN: Input event shape (H,W,C)
     self.cnn_shapes = {k: v for k, v in shapes.items() if (
         len(v) == 3 and re.match(cnn_keys, k))}
     self.mlp_shapes = {k: v for k, v in shapes.items() if (
@@ -281,21 +358,22 @@ class MultiEncoder(nj.Module):
     """Forward pass of the encoder,
 
     Args:
-        data (dict): input, should contain images for CNN or vectors for MLP
+        data (dict): input, contain images for CNN or vectors for MLP, also contain action,rewards,continue flag,... (data from a batch of trajectories---> (B,T,...))
+        input could contain values with shapes begin with (B,...) or (B,T,...) for batch and timestep dims
 
     Returns:
-        array: encoder output, shape:(batch_dims, event_dims)
+        array: encoder output, shape:(batch_dims, event_dims) ----e.g. (B,T,E) or (B,E)
     """
     some_key, some_shape = list(self.shapes.items())[0]  #flatten dict to list of tuples of key and value and pick the first tuple, I guess it contain the event shape
     batch_dims = data[some_key].shape[:-len(some_shape)] # extract batch dims, TODO, need to identify which key is in the data and self.shapes
     data = {
-        k: v.reshape((-1,) + v.shape[len(batch_dims):])
+        k: v.reshape((-1,) + v.shape[len(batch_dims):])   # flatten the batch dims into one dim but keep the event dims
         for k, v in data.items()}
     outputs = []
     if self.cnn_shapes:
-      inputs = jnp.concatenate([data[k] for k in self.cnn_shapes], -1) # concatenate the input data along the last dim
+      inputs = jnp.concatenate([data[k] for k in self.cnn_shapes], -1) # concatenate the input data along the last dim (Channel dim)
       output = self._cnn(inputs)
-      output = output.reshape((output.shape[0], -1))  # flatten the output but keep the batch dim, repeated again to ensure
+      output = output.reshape((output.shape[0], -1))  # -->(B*T,E) or (B,E) flatten the output but keep the combined batch dim, repeated again to ensure
       outputs.append(output)
     if self.mlp_shapes:
       inputs = [
@@ -305,7 +383,7 @@ class MultiEncoder(nj.Module):
       inputs = jaxutils.cast_to_compute(inputs)
       outputs.append(self._mlp(inputs))
     outputs = jnp.concatenate(outputs, -1)
-    outputs = outputs.reshape(batch_dims + outputs.shape[1:]) # should be useless as a double-check, TODO:whether batch_dims is one-dim and the event shape is also one-dim (B,E)
+    outputs = outputs.reshape(batch_dims + outputs.shape[1:]) # recover the combined batch dim (B*T,...) to original batch dim (B,T,...), the event shape E should be one-dim 
     return outputs
 
 
@@ -410,7 +488,7 @@ class ImageEncoderResnet(nj.Module):
     self._kw = kw
 
   def __call__(self, x):
-    """ImageEncoderResnet forward pass
+    """ImageEncoderResnet forward pass, pooling part different from the original paper version (here with additional conv layers and other pooling methods)
 
     Args:
         x (array): Input image with shape (B,H,W,C)

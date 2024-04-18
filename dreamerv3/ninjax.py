@@ -270,9 +270,18 @@ def cond(pred, true_fun, false_fun, *operands):
 
 @jax.named_scope('scan')
 def scan(fun, carry, xs, reverse=False, unroll=1, modify=False):
-  """  
-  carry: dict or tuple of dict-- initial state, each item SHAPE:(B,.)
-  xs :tuple-- swap(action), swap(embed), swap(is_first) , each SHAPE:(T,B,.)
+  """apply a function to a sequence of inputs, accumulating state.
+
+  Args:
+      fun (fn): function to be applied to the sequence of inputs
+      carry (dict or tuple of dict): initial state, each item SHAPE:(B,.)
+      xs (tuple): swap(action), swap(embed), swap(is_first) , each SHAPE:(T,B,.)
+      reverse (bool, optional): whether to scan from the opposite direction. Defaults to False.
+      unroll (int/bool, optional): integar numbers for how many iterations will be combined in a single iter. If using boolean True, it will flatten all loops into one pass. Defaults to 1 (actually no unrolling, same loop operation as normal).
+      modify (bool, optional): whether to update the global vars. Defaults to False.
+
+  Returns:
+      tuple: (carry, ys), carry is the last state dict/tuple of dict, ys is the stacked version of traj state dict/tuple dict for all timesteps , shape (T,B,.)
   """
   fun = pure(fun, nested=True)  #converts impure function (use self.xxx, or rng seed) to pure, by adding global state/var (also in output) and rng as arguments
   _prerun(fun, carry, jax.tree_util.tree_map(lambda x: x[0], xs)) #TODO: maybe some sanity check

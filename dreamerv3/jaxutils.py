@@ -61,8 +61,8 @@ def scan(fn, inputs, start, unroll=True, modify=False):
       fn (function): obs_step() or img_step() 
       inputs (tuple): swap(action), swap(embed), swap(is_first) , each SHAPE:(T,B,.)
       start (tuple): initial state TUPLE(post_dict, prior_dict) in WM stage, here post_dict and prior_dict are the same when init \n or initial state single(prior_dict) in Actor/Critic (imagination) stage \n each item in dict is of shape: (B,.)
-      unroll (bool, optional): _description_. Defaults to True.
-      modify (bool, optional): _description_. Defaults to False.
+      unroll (bool, optional): whether to do manually do the iteration over sequence, if false, it will use a nj.scan function to handle it. Defaults to True.
+      modify (bool, optional): whether to update the global vars during scanning (together with using pure function in nj.scan, where no global var allowed). Defaults to False.
 
   Returns:
       tuple: (post_dict, prior_dict) or (prior_dict) containing stacked states for all timesteps, SHAPE:(T,B,.)
@@ -224,7 +224,7 @@ class DiscDist:
     """distance calculation in discrete settings, here we have the symlog + two-hot encodings transformation
 
     Args:
-        logits (array): the one to be compared with
+        logits (array): the one to be compared with, shape (B,T,...,C),C is the number of bins
         dims (int, optional): number of event/feat dims. Defaults to 0.
         low (int, optional): bin lower bound. Defaults to -20.
         high (int, optional): bin higher bound. Defaults to 20.
@@ -255,7 +255,7 @@ class DiscDist:
         x (array): input array, should be 1-dim smaller than logits (x should not have the bin dim in the end)
 
     Returns:
-        array: cross entropy loss, (1-dim smaller than input x) sum over all classes and the last dim of x (event/feat dim)
+        array: -1*cross entropy loss, (1-dim smaller than input x) sum over all classes and the last dim of x (event/feat dim)
     """
     x = self.transfwd(x) # apply symlog to x
     # calculate the two-hot encoding for x
@@ -447,11 +447,27 @@ class Optimizer(nj.Module):
   def __init__(
       self, lr, opt='adam', eps=1e-5, clip=100.0, warmup=0, wd=0.0,
       wd_pattern=r'/(w|kernel)$', lateclip=0.0):
+    """initialize the optimizer, here we have a chain of gradient transformations
+
+    Args:
+        lr (float): learning rate
+        opt (str, optional): optimizer choice. Defaults to 'adam'.
+        eps (float, optional): Term added to the denominator to improve numerical stability in Adam. Defaults to 1e-5.
+        clip (float, optional): max gradient norm in each update. Defaults to 100.0.
+        warmup (int, optional): learning rate warmup steps (how many steps it take for the linear_scheduler from e.g. 0.0 to given lr). Defaults to 0.
+        wd (float, optional): weight decay rate. Defaults to 0.0.
+        wd_pattern (regexp, optional): regex pattern, define which params will be applied with weight decay. Defaults to r'/(w|kernel)$'.
+        lateclip (float, optional): a second gradient clipping threshold after Adam. Defaults to 0.0.
+
+    Raises:
+        NotImplementedError: optimizer should be adam
+    """
     assert opt in ('adam', 'belief', 'yogi')
     assert wd_pattern[0] not in ('0', '1')
     # assert self.path not in self.PARAM_COUNTS
-    self.PARAM_COUNTS[self.path] = None
-    wd_pattern = re.compile(wd_pattern)
+    self.PARAM_COUNTS[self.path] = None  # self.path is in the parent class nj.Module, name scope of this optimizer module
+    wd_pattern = re.compile(wd_pattern)   # means some strings should end with '/w' or '/kernel'
+    # chain: a sequence of gradient transformations
     chain = []
     if clip:
       chain.append(optax.clip_by_global_norm(clip))
@@ -462,8 +478,9 @@ class Optimizer(nj.Module):
     if lateclip:
       chain.append(late_grad_clip(lateclip))
     if wd:
+      # tree_map result: e.g. params {'a': '/a', 'b': '/b', 'c': {'d': '/c/d', 'w': '/c/w'}}--->{'a': False, 'b': False, 'c': {'d': False, 'w': True}}
       chain.append(optax.additive_weight_decay(wd, lambda params: (
-          tree_map(lambda k: bool(wd_pattern.search(k)), tree_keys(params)))))
+          tree_map(lambda k: bool(wd_pattern.search(k)), tree_keys(params)))))  # bool(wd_pattern.search(k)) is True if k matches the pattern
     if warmup:
       schedule = optax.linear_schedule(0.0, -lr, warmup)
       chain.append(optax.inject_hyperparams(optax.scale)(schedule))
@@ -473,7 +490,7 @@ class Optimizer(nj.Module):
     self.step = nj.Variable(jnp.array, 0, jnp.int32, name='step')
     self.scaling = (COMPUTE_DTYPE == jnp.float16)
     if self.scaling:
-      self.opt = optax.apply_if_finite(self.opt, max_consecutive_errors=1000)
+      self.opt = optax.apply_if_finite(self.opt, max_consecutive_errors=1000) # if gradient contain NaN or Infs, ignore the update for a while (1000 steps)
       self.grad_scale = nj.Variable(
           jnp.array, 1e4, jnp.float32, name='grad_scale')
       self.good_steps = nj.Variable(
@@ -542,9 +559,24 @@ def late_grad_clip(value=1.0):
 
 
 def tree_keys(params, prefix=''):
-  if hasattr(params, 'items'):
-    return type(params)({
-        k: tree_keys(v, prefix + '/' + k.lstrip('/'))
+  """recursively traverse a hierarchical data structure (like nested dictionaries, lists, or tuples)
+  and construct a new structure where the values are replaced by their "paths" or "keys" within the original structure
+
+  Example output: {'a': '/a', 'b': '/b', 'c': {'d': '/c/d', 'e': '/c/e'}}
+
+  Args:
+      params (_type_): _description_
+      prefix (str, optional): _description_. Defaults to ''.
+
+  Raises:
+      TypeError: _description_
+
+  Returns:
+      _type_: _description_
+  """
+  if hasattr(params, 'items'):  # checks if params is a dictionary by looking for the items method, which is characteristic of dictionaries.
+    return type(params)({       # then return a dictionary with the same keys, but the values are the relative path (/key1/key1_sub...) of the values in the original dictionary
+        k: tree_keys(v, prefix + '/' + k.lstrip('/'))   # k.lstrip('/') removes the leading '/' in the key
         for k, v in params.items()})
   elif isinstance(params, (tuple, list)):
     return [tree_keys(x, prefix) for x in params]

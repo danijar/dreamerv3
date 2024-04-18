@@ -55,9 +55,9 @@
 # res=per(x,50.0)
 # print(res)
 # assert res==2.0, "Error"
-# import tensorflow as tf
-# import tensorflow_probability as tfp
-# tfd = tfp.distributions
+import tensorflow as tf
+import tensorflow_probability as tfp
+tfd = tfp.distributions
 
 # # Assume a tensor of shape [10, 20, 3], where 3 is originally the event dimension
 # # Each element in 20 is considered an independent event, but you want to treat them as a single event
@@ -121,6 +121,14 @@ low=0.0
 high=1.0
 logits=jnp.array([[0.1,0.2,0.3,0.4],[0.5,0.6,0.7,0.8],[0.9,1.0,1.1,1.2]],dtype=jnp.float32)
 
+ss=tfd.OneHotCategorical(logits=logits)
+
+print("logits shape",logits.shape)
+ss=jnp.split(logits, 2, -1)
+print("splitted",ss)
+new_logits=logits[...,None]
+newnew_logits=new_logits[:,None]
+print("new_logits shape",newnew_logits.shape)
 split_indices=jnp.array([1,2],dtype=jnp.int32)
 yy=jnp.split(logits,split_indices,axis=-1)
 print(yy)
@@ -167,3 +175,20 @@ print(below)
 # x=-0.5
 # silu=x*jax.nn.sigmoid(x)
 # print(x,silu)
+
+wd_pattern=r'/(w|kernel)$'
+pat=re.compile(wd_pattern)
+aa=pat.search("12/kernel")
+print(bool(aa))
+
+ss='good'
+print(ss.lstrip('g'))
+from dreamerv3.jaxutils import tree_keys
+
+exp_dict={'a':x,'b':x,'c':{"d":x,"w":x}}
+print(tree_keys(exp_dict))
+
+tree_map = jax.tree_util.tree_map # This is a function from the jax.tree_util module that applies a given function to each element in a nested structure (such as lists, tuples, dictionaries, etc.) in a recursive manner
+sg = lambda x: tree_map(jax.lax.stop_gradient, x)
+res=tree_map(lambda k: bool(pat.search(k)), tree_keys(exp_dict))
+print(res)

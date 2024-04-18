@@ -169,10 +169,19 @@ class WorldModel(nj.Module):
     return state, outs, metrics
 
   def loss(self, data, state):
-    embed = self.encoder(data)  # z_t, maybe a prob, distribution
+    """overall loss function for the world model
+
+    Args:
+        data (dict): contain a batch of chopped trajectory data, including action, image/obs, reward, contiue flag, terminal flag, reset flag, is_first flag, is_last flag
+        state (tuple): init state dict --TODO: need to check which step is it from exactly) {z_t, h_t, z_prob_t} and previous action (as a_0), just  the last step, unlike the data which has a sequence within the full trajectory
+
+    Returns:
+        _type_: _description_
+    """
+    embed = self.encoder(data)  # output (B,T,x)
     prev_latent, prev_action = state
     prev_actions = jnp.concatenate([                        # all previous actions (including the most recent one)
-        prev_action[:, None], data['action'][:, :-1]], 1)
+        prev_action[:, None], data['action'][:, :-1]], 1)  # expand the dimension of prev_action to (B,1,A) and concat in the first timestep of the trajectory (as a_0) ---> a_0:T-1, and exclude a_T
     post, prior = self.rssm.observe(
         embed, prev_actions, data['is_first'], prev_latent)
     dists = {}
@@ -180,21 +189,23 @@ class WorldModel(nj.Module):
     for name, head in self.heads.items():
       out = head(feats if name in self.config.grad_heads else sg(feats))
       out = out if isinstance(out, dict) else {name: out}
-      dists.update(out)
+      dists.update(out)   # a dictionary of the output of the heads --- distance measure object
     losses = {}
     losses['dyn'] = self.rssm.dyn_loss(post, prior, **self.config.dyn_loss)
     losses['rep'] = self.rssm.rep_loss(post, prior, **self.config.rep_loss)
+
+    # Equation (5).1, three negative log likelihood loss
     for key, dist in dists.items():
-      loss = -dist.log_prob(data[key].astype(jnp.float32))
+      loss = -dist.log_prob(data[key].astype(jnp.float32))   # negative log likelihood, (B,T)
       assert loss.shape == embed.shape[:2], (key, loss.shape)
       losses[key] = loss
     scaled = {k: v * self.scales[k] for k, v in losses.items()}
-    model_loss = sum(scaled.values())
+    model_loss = sum(scaled.values())  # (B,T)
     out = {'embed':  embed, 'post': post, 'prior': prior}
-    out.update({f'{k}_loss': v for k, v in losses.items()})
+    out.update({f'{k}_loss': v for k, v in losses.items()})   # add the unscaled loss to the output
     last_latent = {k: v[:, -1] for k, v in post.items()}
     last_action = data['action'][:, -1]
-    state = last_latent, last_action
+    state = last_latent, last_action  # contain the last latent state and the last action of he sequence
     metrics = self._metrics(data, dists, post, prior, losses, model_loss)
     return model_loss.mean(), (state, out, metrics)
 
