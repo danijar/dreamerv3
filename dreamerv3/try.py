@@ -194,13 +194,26 @@ print(jnp.sum(logits))
 # res=tree_map(lambda k: bool(pat.search(k)), tree_keys(exp_dict))
 # print(res)
 
-import optax
-transform1 = optax.scale_by_adam()
-transform2 = optax.scale(-0.1)
-chained_transform = optax.chain(transform1, transform2)
-params = {'a': 1.0}
-state = chained_transform.init(params)
-updates = {'a': -0.5}
-updates, new_state = chained_transform.update(updates, state, params)
-print(updates)
-print(new_state)
+# import optax
+# transform1 = optax.scale_by_adam()
+# transform2 = optax.scale(-0.1)
+# chained_transform = optax.chain(transform1, transform2)
+# params = {'a': 1.0}
+# state = chained_transform.init(params)
+# updates = {'a': -0.5}
+# updates, new_state = chained_transform.update(updates, state, params)
+# print(updates)
+# print(new_state)
+
+# IS_PATTERN = re.compile(r'.*[^A-Za-z0-9_.-].*')
+# IS_PATTERN2 = re.compile(r'.ab_nabc$')  # \ will be basically ignored
+# print(bool(IS_PATTERN2.match(".ab_nabc")))  
+# k="cba"
+# print(f'abc{k}\{k}')
+
+nested_dict = {'a': {'b\\': {'c\\': 1}}}
+print(str(nested_dict))
+lines = str(nested_dict).split(':')[2:]
+print('\n'.join('--' + re.sub(r'[:,\\]', '', x) for x in lines))
+
+#\\\\\\\\Attention////////// re.sub(r'[:,\\]' correct, re.sub('[:,\\]' raise error: Reason---the only difference is \\ will become \, and if without r, then the resulting \ will be further as escape for the last ], causing error

@@ -525,7 +525,7 @@ class Optimizer(nj.Module):
     
     Return:
         tuple/dict: 1. metrics dict containing loss, grad_norm, grad_steps, grad_scale, grad_overflow.
-                    2. (optional) aux containing the auxiliary information like the input args(posterior_state_dict, action), loss element values and some stats.
+                    2. (optional) aux containing the auxiliary information (posterior_state_dict, action) of the last step in the sequence, loss element values and some stats.
     """
     def wrapped(*args, **kwargs):
       jax.debug.breakpoint()

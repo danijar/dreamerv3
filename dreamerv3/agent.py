@@ -169,7 +169,7 @@ class WorldModel(nj.Module):
         state (tuple): init state dict --TODO: need to check which step is it from exactly) {z_t, h_t, z_prob_t} and previous action (as a_0), just  the last step, unlike the data which has a sequence within the full trajectory
 
     Returns:
-       tuple: the auxiliary information ---- the input args(posterior_state_dict, action), loss element values and all stats.
+       tuple: the auxiliary information ---- (posterior_state_dict, action) of the last step in the sequence, loss element values and all stats.
     """
     modules = [self.encoder, self.rssm, *self.heads.values()]
     mets, (state, outs, metrics) = self.opt(

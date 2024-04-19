@@ -7,6 +7,8 @@ from . import config
 class Flags:
 
   def __init__(self, *args, **kwargs):
+    """TODO: seems to store the default config
+    """
     self._config = config.Config(*args, **kwargs)
 
   def parse(self, argv=None, help_exists=True):
@@ -19,11 +21,11 @@ class Flags:
 
   def parse_known(self, argv=None, help_exists=False):
     if argv is None:
-      argv = sys.argv[1:]
-    if '--help' in argv:
+      argv = sys.argv[1:]    # read the command line arguments if argv is None
+    if '--help' in argv:     # TODO:print the help message and exit if --help is in argv, exit if help_exists is True
       print('\nHelp:')
       lines = str(self._config).split('\n')[2:]
-      print('\n'.join('--' + re.sub(r'[:,\[\]]', '', x) for x in lines))
+      print('\n'.join('--' + re.sub(r'[:,\[\]]', '', x) for x in lines))  # printing, begin new line with '--' and remove colons, commas, and square brackets from each line x
       help_exists and sys.exit()
     parsed = {}
     remaining = []

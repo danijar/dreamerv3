@@ -8,9 +8,12 @@ from . import path
 class Config(dict):
 
   SEP = '.'
-  IS_PATTERN = re.compile(r'.*[^A-Za-z0-9_.-].*')
+  IS_PATTERN = re.compile(r'.*[^A-Za-z0-9_.-].*') # Match any non-alphanumeric character, likely detect '/' or '\'
 
   def __init__(self, *args, **kwargs):
+    """Initializes itself as a standard dictionary with its contents set to those of self._nested, but with additional methods and properties
+    Here needs to assign the values to the base class dictionary so that conversion to dict `filename.write(json.dumps(dict(self)))` does not lose the content.
+    """
     mapping = dict(*args, **kwargs)
     mapping = self._flatten(mapping)
     mapping = self._ensure_keys(mapping)
@@ -133,12 +136,22 @@ class Config(dict):
     return type(self)(result)
 
   def _flatten(self, mapping):
+    """flatten the nested dictionary into a single level dictionary and change the keys with their relative paths,
+    more efficient to lookup, check and modification than the recursive version
+
+    Args:
+        mapping (dict): input nested dictionary
+
+    Returns:
+        dict: flattened dictionary
+    """
     result = {}
     for key, value in mapping.items():
       if isinstance(value, dict):
         for k, v in self._flatten(value).items():
+          # if the key or k has non-alphanumeric characters, then add a backslash before the separator 
           if self.IS_PATTERN.match(key) or self.IS_PATTERN.match(k):
-            combined = f'{key}\\{self.SEP}{k}'
+            combined = f'{key}\\{self.SEP}{k}'   # "\\" is same as "\" here
           else:
             combined = f'{key}{self.SEP}{k}'
           result[combined] = v
@@ -147,6 +160,14 @@ class Config(dict):
     return result
 
   def _nest(self, mapping):
+    """re-nest the flattened dictionary into a nested dictionary according to the SEP in the keys
+
+    Args:
+        mapping (dict): flattened dictionary
+
+    Returns:
+        dict: re-nested dictionary
+    """
     result = {}
     for key, value in mapping.items():
       parts = key.split(self.SEP)
@@ -159,12 +180,35 @@ class Config(dict):
     return result
 
   def _ensure_keys(self, mapping):
+    """ensure that the keys in the (flattened) mapping do not contain any non-alphanumeric characters,
+    usually used after self._flatten()
+
+    Args:
+        mapping (dict): input dictionary
+
+    Returns:
+        dict: input dictionary
+    """
     for key in mapping:
       assert not self.IS_PATTERN.match(key), key
     return mapping
 
   def _ensure_values(self, mapping):
-    result = json.loads(json.dumps(mapping))
+    """ensure that the values in the (flattened) mapping are of the correct type and format.
+     all lists will be converted to tuples, and tuples will be checked for type consistency (must be all of the same type from strings, floats, ints, bools)
+
+    Args:
+        mapping (dict): input dictionary
+
+    Raises:
+        TypeError: no empty lists allowed
+        TypeError: lists can only contain strings, floats, ints, bools
+        TypeError: elements of a list must all be of the same type
+
+    Returns:
+        dict: a deep copy of the input dictionary with lists becoming tuples, the original dictionary is not modified
+    """
+    result = json.loads(json.dumps(mapping))  # Deep copy.
     for key, value in result.items():
       if isinstance(value, list):
         value = tuple(value)
