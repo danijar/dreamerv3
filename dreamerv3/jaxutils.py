@@ -243,6 +243,11 @@ class DiscDist:
     self.event_shape = logits.shape[len(logits.shape) - dims: -1]
 
   def mean(self):
+    """get the expectation value of the distribution,by transforming to continuous value and undoing the symlog transformation
+
+    Returns:
+        array: mean of the distribution, shape (B,T,...), without the bin dim
+    """
     return self.transbwd((self.probs * self.bins).sum(-1))
 
   def mode(self):
@@ -252,13 +257,13 @@ class DiscDist:
     """calculate log_prob (-1*cross entropy loss), Equation (8) + (9) + (10)
 
     Args:
-        x (array): input array, should be 1-dim smaller than logits (x should not have the bin dim in the end)
+        x (array): input array, usually as label, should be 1-dim smaller than logits (x should not have the bin dim in the end)
 
     Returns:
-        array: -1*cross entropy loss, (1-dim smaller than input x) sum over all classes and the last dim of x (event/feat dim)
+        array: -1*cross entropy loss, (1-dim smaller than input x, if x has a even-dim e.g. (B,T,E); if x is (B,T), then it will be the same shape) sum over all classes and the last dim of x (event/feat dim if have any, otherwise won't sum last dim of x)
     """
     x = self.transfwd(x) # apply symlog to x
-    # calculate the two-hot encoding for x
+    # calculate the two-hot encoding for x , below and above same shape as x
     below = (self.bins <= x[..., None]).astype(jnp.int32).sum(-1) - 1  # find the nearest bin index below each element in last dim of x
     above = len(self.bins) - (
         self.bins > x[..., None]).astype(jnp.int32).sum(-1) # find the nearest bin index above each element in last dim of x
@@ -274,14 +279,15 @@ class DiscDist:
     weight_below = dist_to_above / total
     weight_above = dist_to_below / total
     # get the two-hot encoding for x, weight_below/above same shape as x
-    # target shape: (x.shape, len(self.bins))
+    # target shape: (x.shape, len(self.bins)), label distribution
     target = (
         jax.nn.one_hot(below, len(self.bins)) * weight_below[..., None] +
         jax.nn.one_hot(above, len(self.bins)) * weight_above[..., None])
     # this line is basically calculation the log of the softmax of the logits
+    # log_pred,same shape as target and self.logits
     log_pred = self.logits - jax.scipy.special.logsumexp(
         self.logits, -1, keepdims=True)
-    return (target * log_pred).sum(-1).sum(self.dims) # -1* cross entropy loss, sum over all classes and the last dim of x (event/feat dim)
+    return (target * log_pred).sum(-1).sum(self.dims) # -1* cross entropy loss, sum over all classes and the last dim of x (event/feat dim if have any, otherwise won't sum last dim of x)
 
 
 def video_grid(video):
@@ -290,11 +296,23 @@ def video_grid(video):
 
 
 def balance_stats(dist, target, thres):
-  # Values are NaN when there are no positives or negatives in the current
-  # batch, which means they will be ignored when aggregating metrics via
-  # np.nanmean() later, as they should.
-  pos = (target.astype(jnp.float32) > thres).astype(jnp.float32)
-  neg = (target.astype(jnp.float32) <= thres).astype(jnp.float32)
+  """calculate the average loss and accuracy for datapoints above and below a given threshold
+
+  Values are NaN when there are no positives or negatives in the current
+  batch, which means they will be ignored when aggregating metrics via
+  np.nanmean() later, as they should.
+
+  Args:
+      dist (obj): the distance measure object on the prediction , e.g. MSEDist, SymlogDist, DiscDist
+      target (array): the target array, usually as label
+      thres (float): the threshold value
+
+  Returns:
+      dict: containing mean loss and accuracy for datapoints above and below the threshold and other stats
+  """
+  
+  pos = (target.astype(jnp.float32) > thres).astype(jnp.float32)  #positive mask, show all label elements above thres
+  neg = (target.astype(jnp.float32) <= thres).astype(jnp.float32) #negative mask, show all label elements below thres
   pred = (dist.mean().astype(jnp.float32) > thres).astype(jnp.float32)
   loss = -dist.log_prob(target)
   return dict(
@@ -302,9 +320,9 @@ def balance_stats(dist, target, thres):
       neg_loss=(loss * neg).sum() / neg.sum(),
       pos_acc=(pred * pos).sum() / pos.sum(),
       neg_acc=((1 - pred) * neg).sum() / neg.sum(),
-      rate=pos.mean(),
-      avg=target.astype(jnp.float32).mean(),
-      pred=dist.mean().astype(jnp.float32).mean(),
+      rate=pos.mean(),        # proportion of positive data points
+      avg=target.astype(jnp.float32).mean(),        # average of the target array
+      pred=dist.mean().astype(jnp.float32).mean(),  # average of the prediction array after transforming bins to continuous values
   )
 
 
@@ -485,10 +503,10 @@ class Optimizer(nj.Module):
       schedule = optax.linear_schedule(0.0, -lr, warmup)
       chain.append(optax.inject_hyperparams(optax.scale)(schedule))
     else:
-      chain.append(optax.scale(-lr))
+      chain.append(optax.scale(-lr))  # scale the gradients with -lr (minus mean gradient descent)
     self.opt = optax.chain(*chain)
     self.step = nj.Variable(jnp.array, 0, jnp.int32, name='step')
-    self.scaling = (COMPUTE_DTYPE == jnp.float16)
+    self.scaling = (COMPUTE_DTYPE == jnp.float16)   # TODO: confusing why scaling only for float16
     if self.scaling:
       self.opt = optax.apply_if_finite(self.opt, max_consecutive_errors=1000) # if gradient contain NaN or Infs, ignore the update for a while (1000 steps)
       self.grad_scale = nj.Variable(
@@ -497,36 +515,51 @@ class Optimizer(nj.Module):
           jnp.array, 0, jnp.int32, name='good_steps')
 
   def __call__(self, modules, lossfn, *args, has_aux=False, **kwargs):
+    """forward pass of the optimizer, calculate the loss and update the parameters, 
+
+    Args:
+        modules (list): list of NN modules to be updated
+        lossfn (fn): loss function
+        has_aux (bool, optional): Here the function is actually hardcoded for the True option, otherwise raise error. However, it should mean whether to output auxiliary information like the input args, loss element values and some stats. Defaults to False.
+        args (tuple): containing data, (posterior_state_dict, action)--of last step. They will be used as inputs to loss function.
+    
+    Return:
+        tuple/dict: 1. metrics dict containing loss, grad_norm, grad_steps, grad_scale, grad_overflow.
+                    2. (optional) aux containing the auxiliary information like the input args(posterior_state_dict, action), loss element values and some stats.
+    """
     def wrapped(*args, **kwargs):
+      jax.debug.breakpoint()
       outs = lossfn(*args, **kwargs)
-      loss, aux = outs if has_aux else (outs, None)
+      loss, aux = outs if has_aux else (outs, None)  # loss is overall loss, aux is (state, out, metrics) in the loss function output
       assert loss.dtype == jnp.float32, (self.name, loss.dtype)
       assert loss.shape == (), (self.name, loss.shape)
-      if self.scaling:
-        loss *= sg(self.grad_scale.read())
+      if self.scaling:      
+        loss *= sg(self.grad_scale.read())  # scale the loss in the first place
       return loss, aux
     metrics = {}
     loss, params, grads, aux = nj.grad(
         wrapped, modules, has_aux=True)(*args, **kwargs)
-    if not self.PARAM_COUNTS[self.path]:
+    if not self.PARAM_COUNTS[self.path]:           # count the number of parameters in the model
       count = sum([np.prod(x.shape) for x in params.values()])
       print(f'Optimizer {self.name} has {count:,} variables.')
       self.PARAM_COUNTS[self.path] = count
     if parallel():
-      grads = tree_map(lambda x: jax.lax.pmean(x, 'i'), grads)
-    if self.scaling:
-      grads = tree_map(lambda x: x / self.grad_scale.read(), grads)
+      grads = tree_map(lambda x: jax.lax.pmean(x, 'i'), grads)  # compute the mean of the gradients across all devices
+    if self.scaling:            # scale the gradients dynamically
+      grads = tree_map(lambda x: x / self.grad_scale.read(), grads)     
       finite = self._update_scale(grads)
-      metrics[f'{self.name}_grad_scale'] = self.grad_scale.read()
-      metrics[f'{self.name}_grad_overflow'] = (~finite).astype(jnp.float32)
+      metrics[f'{self.name}_grad_scale'] = self.grad_scale.read()        # the latest scaling factor of the gradients
+      metrics[f'{self.name}_grad_overflow'] = (~finite).astype(jnp.float32)  # if the gradients contain NaN or Infs, then it is overflow
+    # optstate: keeps track of any internal variables needed by the transformations, such as the moving averages maintained by Adam.
+    # updates: transformed gradients results from the chain
     optstate = self.get('state', self.opt.init, params)
-    updates, optstate = self.opt.update(grads, optstate, params)
+    updates, optstate = self.opt.update(grads, optstate, params)  
     self.put('state', optstate)
-    nj.context().update(optax.apply_updates(params, updates))
-    norm = optax.global_norm(grads)
+    nj.context().update(optax.apply_updates(params, updates))  # do the update
+    norm = optax.global_norm(grads)  # sqrt(sum(grads**2))---scalar, the global norm of the gradients after potential scaling and mean across device, but before the chain
     if self.scaling:
-      norm = jnp.where(jnp.isfinite(norm), norm, jnp.nan)
-    self.step.write(self.step.read() + jnp.isfinite(norm).astype(jnp.int32))
+      norm = jnp.where(jnp.isfinite(norm), norm, jnp.nan)  #replace the (scalar) norm with NaN if it is not finite
+    self.step.write(self.step.read() + jnp.isfinite(norm).astype(jnp.int32))  # increase the step by 1 if the norm is finite
     metrics['loss'] = loss.mean()
     metrics['grad_norm'] = norm
     metrics['grad_steps'] = self.step.read()
@@ -534,13 +567,22 @@ class Optimizer(nj.Module):
     return (metrics, aux) if has_aux else metrics
 
   def _update_scale(self, grads):
+    """dynamic scaling of the gradients with clipping, it will increase the grad_scale (x2) if the gradients are finite and the number of good steps is large, and decrease the grad_scale (/2) if the gradients are not finite (containing NaN or Infs)
+
+    Args:
+        grads (dict): gradients of each component in the model
+
+    Returns:
+        boolean: whether the gradients contain only finite values
+    """
     finite = jnp.array([
-        jnp.isfinite(x).all() for x in jax.tree_util.tree_leaves(grads)]).all()
-    keep = (finite & (self.good_steps.read() < 1000))
-    incr = (finite & (self.good_steps.read() >= 1000))
+        jnp.isfinite(x).all() for x in jax.tree_util.tree_leaves(grads)]).all()  # check if all the elements in the grads are finite, return a boolean
+    keep = (finite & (self.good_steps.read() < 1000))   # if finite and number of good steps is small, then keep the current grad_scale
+    incr = (finite & (self.good_steps.read() >= 1000))  # if finite and number of good steps is large, then increase the grad_scale
     decr = ~finite
     self.good_steps.write(
-        keep.astype(jnp.int32) * (self.good_steps.read() + 1))
+        keep.astype(jnp.int32) * (self.good_steps.read() + 1))         #if not finite or got increment signal, then reset good_steps to 0. Otherwise, increase the good_steps by 1
+    # Here implement the dynamic scaling of the gradients with clipping
     self.grad_scale.write(jnp.clip(
         keep.astype(jnp.float32) * self.grad_scale.read() +
         incr.astype(jnp.float32) * self.grad_scale.read() * 2 +
@@ -565,14 +607,14 @@ def tree_keys(params, prefix=''):
   Example output: {'a': '/a', 'b': '/b', 'c': {'d': '/c/d', 'e': '/c/e'}}
 
   Args:
-      params (_type_): _description_
-      prefix (str, optional): _description_. Defaults to ''.
+      params (iterable:dict/tuple/list/array): the hierarchical data structure to traverse for getting relative paths
+      prefix (str, optional): the inital path string. Defaults to ''.
 
   Raises:
-      TypeError: _description_
+      TypeError: the input params should be a dictionary, tuple, list or array
 
   Returns:
-      _type_: _description_
+      iterable same as params: but the leaf values are replaced by their relative paths
   """
   if hasattr(params, 'items'):  # checks if params is a dictionary by looking for the items method, which is characteristic of dictionaries.
     return type(params)({       # then return a dictionary with the same keys, but the values are the relative path (/key1/key1_sub...) of the values in the original dictionary

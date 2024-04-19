@@ -117,29 +117,30 @@ import jax.lax
 # # print(out)
 # print(out_conv.shape)
 
-low=0.0
-high=1.0
+# low=0.0
+# high=1.0
 logits=jnp.array([[0.1,0.2,0.3,0.4],[0.5,0.6,0.7,0.8],[0.9,1.0,1.1,1.2]],dtype=jnp.float32)
 
-ss=tfd.OneHotCategorical(logits=logits)
+# ss=tfd.OneHotCategorical(logits=logits)
 
-print("logits shape",logits.shape)
-ss=jnp.split(logits, 2, -1)
-print("splitted",ss)
-new_logits=logits[...,None]
-newnew_logits=new_logits[:,None]
-print("new_logits shape",newnew_logits.shape)
-split_indices=jnp.array([1,2],dtype=jnp.int32)
-yy=jnp.split(logits,split_indices,axis=-1)
-print(yy)
+# print("logits shape",logits.shape)
+# ss=jnp.split(logits, 2, -1)
+# print("splitted",ss)
+# new_logits=logits[...,None]
+# newnew_logits=new_logits[:,None]
+# print("new_logits shape",newnew_logits.shape)
+# split_indices=jnp.array([1,2],dtype=jnp.int32)
+# yy=jnp.split(logits,split_indices,axis=-1)
+# print(yy)
 
 x=jnp.array([0.1,0.2,0.3],dtype=jnp.float32)
-# y=x[..., None]
-# print(jnp.concatenate([x,y],axis=-1))
-bins = jnp.linspace(low, high, logits.shape[-1])
-print("bins",bins)
-below = (bins <= x[..., None]).astype(jnp.int32).sum(-1) - 1
-print(below)
+y=x[..., None]
+print(jnp.sum(logits))
+# # print(jnp.concatenate([x,y],axis=-1))
+# bins = jnp.linspace(low, high, logits.shape[-1])
+# print("bins",bins)
+# below = (bins <= x[..., None]).astype(jnp.int32).sum(-1) - 1
+# print(below)
 
 # import tensorflow_probability as tfp
 # import tensorflow as tf
@@ -176,19 +177,30 @@ print(below)
 # silu=x*jax.nn.sigmoid(x)
 # print(x,silu)
 
-wd_pattern=r'/(w|kernel)$'
-pat=re.compile(wd_pattern)
-aa=pat.search("12/kernel")
-print(bool(aa))
+# wd_pattern=r'/(w|kernel)$'
+# pat=re.compile(wd_pattern)
+# aa=pat.search("12/kernel")
+# print(bool(aa))
 
-ss='good'
-print(ss.lstrip('g'))
-from dreamerv3.jaxutils import tree_keys
+# ss='good'
+# print(ss.lstrip('g'))
+# from dreamerv3.jaxutils import tree_keys
 
-exp_dict={'a':x,'b':x,'c':{"d":x,"w":x}}
-print(tree_keys(exp_dict))
+# exp_dict={'a':x,'b':x,'c':{"d":x,"w":x}}
+# print(tree_keys(exp_dict))
 
-tree_map = jax.tree_util.tree_map # This is a function from the jax.tree_util module that applies a given function to each element in a nested structure (such as lists, tuples, dictionaries, etc.) in a recursive manner
-sg = lambda x: tree_map(jax.lax.stop_gradient, x)
-res=tree_map(lambda k: bool(pat.search(k)), tree_keys(exp_dict))
-print(res)
+# tree_map = jax.tree_util.tree_map # This is a function from the jax.tree_util module that applies a given function to each element in a nested structure (such as lists, tuples, dictionaries, etc.) in a recursive manner
+# sg = lambda x: tree_map(jax.lax.stop_gradient, x)
+# res=tree_map(lambda k: bool(pat.search(k)), tree_keys(exp_dict))
+# print(res)
+
+import optax
+transform1 = optax.scale_by_adam()
+transform2 = optax.scale(-0.1)
+chained_transform = optax.chain(transform1, transform2)
+params = {'a': 1.0}
+state = chained_transform.init(params)
+updates = {'a': -0.5}
+updates, new_state = chained_transform.update(updates, state, params)
+print(updates)
+print(new_state)

@@ -125,12 +125,13 @@ class WorldModel(nj.Module):
     """Here the world models in Equation (3) are initialized + the optimizer + the loss scaling
 
     Args:
-        obs_space (dict): _description_
-        act_space (dict): _description_
-        config (_type_): _description_
+        obs_space (dict): inside is Space object for observation (obs, reward, is_first, is_last, is_terminal), each containing shape, value range, dtype, discrete, etc. 
+        act_space (dict): inside is Space object for action (action, reset), each containing shape, value range, dtype, discrete, etc. 
+        config (dict): the total config of the task setting and models...
     """
-    self.obs_space = obs_space           #both space are dict, value is data/input array probably TODO: check what's in the obs/act_space
-    self.act_space = act_space['action']
+    # both space are dict, inside is Space object, containing shape, value range, dtype, discrete, etc. 
+    self.obs_space = obs_space           
+    self.act_space = act_space['action']  
     self.config = config
     shapes = {k: tuple(v.shape) for k, v in obs_space.items()}               # this is for obs_shape, now only tuple of dimension in value
     shapes = {k: v for k, v in shapes.items() if not k.startswith('log_')}   # exclude the log_xxx keys
@@ -140,9 +141,8 @@ class WorldModel(nj.Module):
         'decoder': nets.MultiDecoder(shapes, **config.decoder, name='dec'),
         'reward': nets.MLP((), **config.reward_head, name='rew'),  #shape is () not None, will eventually output distance measure object
         'cont': nets.MLP((), **config.cont_head, name='cont')}
-    # TODO: need to look into the Optimizer class
     self.opt = jaxutils.Optimizer(name='model_opt', **config.model_opt)
-    scales = self.config.loss_scales.copy()
+    scales = self.config.loss_scales.copy()   # dict of the loss scaling factors for each sub-loss, including world models and actor critics
     image, vector = scales.pop('image'), scales.pop('vector')
     scales.update({k: image for k in self.heads['decoder'].cnn_shapes})
     scales.update({k: vector for k in self.heads['decoder'].mlp_shapes})
@@ -162,10 +162,19 @@ class WorldModel(nj.Module):
     return prev_latent, prev_action
 
   def train(self, data, state):
+    """training the world model
+
+    Args:
+        data (dict): contain a batch of chopped trajectory data, including action, image/obs, reward, contiue flag, terminal flag, reset flag, is_first flag, is_last flag
+        state (tuple): init state dict --TODO: need to check which step is it from exactly) {z_t, h_t, z_prob_t} and previous action (as a_0), just  the last step, unlike the data which has a sequence within the full trajectory
+
+    Returns:
+       tuple: the auxiliary information ---- the input args(posterior_state_dict, action), loss element values and all stats.
+    """
     modules = [self.encoder, self.rssm, *self.heads.values()]
     mets, (state, outs, metrics) = self.opt(
         modules, self.loss, data, state, has_aux=True)
-    metrics.update(mets)
+    metrics.update(mets)  # put the grad metrics into the total metrics dict
     return state, outs, metrics
 
   def loss(self, data, state):
@@ -176,7 +185,7 @@ class WorldModel(nj.Module):
         state (tuple): init state dict --TODO: need to check which step is it from exactly) {z_t, h_t, z_prob_t} and previous action (as a_0), just  the last step, unlike the data which has a sequence within the full trajectory
 
     Returns:
-        _type_: _description_
+        tuple: overall loss from scaled sub-losses, ((last_state_post_dict from the sequence,last action),out_dict--sequence of embed+post+prior+unscaled loss,metrics_dict)
     """
     embed = self.encoder(data)  # output (B,T,x)
     prev_latent, prev_action = state
@@ -201,11 +210,11 @@ class WorldModel(nj.Module):
       losses[key] = loss
     scaled = {k: v * self.scales[k] for k, v in losses.items()}
     model_loss = sum(scaled.values())  # (B,T)
-    out = {'embed':  embed, 'post': post, 'prior': prior}
+    out = {'embed':  embed, 'post': post, 'prior': prior}     # out contains the sequence info, (B,T,.)
     out.update({f'{k}_loss': v for k, v in losses.items()})   # add the unscaled loss to the output
     last_latent = {k: v[:, -1] for k, v in post.items()}
     last_action = data['action'][:, -1]
-    state = last_latent, last_action  # contain the last latent state and the last action of he sequence
+    state = last_latent, last_action  # contain the last latent state posterior and the last action of the sequence
     metrics = self._metrics(data, dists, post, prior, losses, model_loss)
     return model_loss.mean(), (state, out, metrics)
 
@@ -248,14 +257,31 @@ class WorldModel(nj.Module):
     return report
 
   def _metrics(self, data, dists, post, prior, losses, model_loss):
+    """Here calculate the metrics for World Model statistics
+
+    Args:
+        data (dict): data from the real-world interaction sequence, each shape: (B,T,...)
+        dists (dict): the output predictions of the heads, distance measure objects
+        post (dict): posterior state dict of the entire sequence
+        prior (dict: prior state dict of the entire sequence
+        losses (dict): containing all loss items (B,T)
+        model_loss (array): sum of scaled sub-losses, (B,T)
+
+    Returns:
+        dict: output statistics, all are scalar/ 1-dimensional array
+    """
     entropy = lambda feat: self.rssm.get_dist(feat).entropy()
     metrics = {}
+    # add entropy of the stochastic distribution in prior and posterior
     metrics.update(jaxutils.tensorstats(entropy(prior), 'prior_ent'))
     metrics.update(jaxutils.tensorstats(entropy(post), 'post_ent'))
+    # add mean and std of the sub-items in loss (Equation (5)), scalar now
     metrics.update({f'{k}_loss_mean': v.mean() for k, v in losses.items()})
     metrics.update({f'{k}_loss_std': v.std() for k, v in losses.items()})
+    # add overall loss mean and std
     metrics['model_loss_mean'] = model_loss.mean()
     metrics['model_loss_std'] = model_loss.std()
+    # add the max reward and the max mean pred reward in this batched sequence
     metrics['reward_max_data'] = jnp.abs(data['reward']).max()
     metrics['reward_max_pred'] = jnp.abs(dists['reward'].mean()).max()
     if 'reward' in dists and not self.config.jax.debug_nans:
