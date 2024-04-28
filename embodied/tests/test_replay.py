@@ -25,6 +25,11 @@ REPLAYS_UNIFORM = [
 ]
 
 
+def unbatched(dataset):
+  for batch in dataset:
+    yield {k: v[0] for k, v in batch.items()}
+
+
 @pytest.mark.filterwarnings('ignore:.*Pillow.*')
 @pytest.mark.filterwarnings('ignore:.*the imp module.*')
 @pytest.mark.filterwarnings('ignore:.*distutils.*')
@@ -35,10 +40,9 @@ class TestReplay:
     replay = Replay(length=5, capacity=10)
     for step in range(30):
       replay.add({'image': np.zeros((64, 64, 3)), 'action': np.zeros(12)})
-    seq = next(iter(replay.dataset()))
-    # assert set(seq.keys()) == {'id', 'image', 'action'}
-    assert set(seq.keys()) == {'image', 'action'}
-    # assert seq['id'].shape == (5, 16)
+    seq = next(unbatched(replay.dataset(1)))
+    assert set(seq.keys()) == {'stepid', 'image', 'action'}
+    assert seq['stepid'].shape == (5, 20)
     assert seq['image'].shape == (5, 64, 64, 3)
     assert seq['action'].shape == (5, 12)
 
@@ -65,7 +69,7 @@ class TestReplay:
     for step in range(30):
       for worker in range(workers):
         replay.add({'step': step, 'worker': worker}, worker)
-    dataset = iter(replay.dataset())
+    dataset = unbatched(replay.dataset(1))
     for _ in range(10):
       seq = next(dataset)
       assert (seq['step'] - seq['step'][0] == np.arange(length)).all()
@@ -78,7 +82,7 @@ class TestReplay:
     replay = Replay(length, capacity)
     for step in range(length):
       replay.add({'step': step})
-    dataset = iter(replay.dataset())
+    dataset = unbatched(replay.dataset(1))
     for _ in range(10):
       seq = next(dataset)
       assert (seq['step'] == np.arange(length)).all()
@@ -90,7 +94,7 @@ class TestReplay:
       replay.add({'step': step})
     assert len(replay) == 3
     histogram = collections.defaultdict(int)
-    dataset = iter(replay.dataset())
+    dataset = unbatched(replay.dataset(1))
     for _ in range(100):
       seq = next(dataset)
       histogram[seq['step'][0]] += 1
@@ -107,7 +111,7 @@ class TestReplay:
     replay.add({'step': 1}, worker=1)
     replay.add({'step': 2}, worker=0)
     replay.add({'step': 3}, worker=1)
-    dataset = iter(replay.dataset())
+    dataset = unbatched(replay.dataset(1))
     for _ in range(10):
       seq = next(dataset)
       assert tuple(seq['step']) in ((0, 2), (1, 3))
@@ -125,7 +129,7 @@ class TestReplay:
       except StopIteration:
         pass
     histogram = collections.defaultdict(int)
-    dataset = iter(replay.dataset())
+    dataset = unbatched(replay.dataset(1))
     for _ in range(10):
       seq = next(dataset)
       assert (seq['step'] - seq['step'][0] == np.arange(length)).all()
@@ -155,16 +159,18 @@ class TestReplay:
       [(1, 1, 128), (3, 10, 128), (5, 100, 128), (5, 25, 2)])
   def test_restore_exact(self, tmpdir, Replay, length, capacity, chunksize):
     embodied.uuid.reset(debug=True)
-    replay = Replay(length, capacity, directory=tmpdir, chunksize=chunksize)
+    replay = Replay(
+        length, capacity, directory=tmpdir, chunksize=chunksize,
+        save_wait=True)
     for step in range(30):
       replay.add({'step': step})
     num_items = np.clip(30 - length + 1, 0, capacity)
     assert len(replay) == num_items
-    replay.save(wait=True)
+    data = replay.save()
     replay = Replay(length, capacity, directory=tmpdir)
-    replay.load()
+    replay.load(data)
     assert len(replay) == num_items
-    dataset = iter(replay.dataset())
+    dataset = unbatched(replay.dataset(1))
     for _ in range(len(replay)):
       assert len(next(dataset)['step']) == length
 
@@ -174,16 +180,18 @@ class TestReplay:
       [(1, 1, 128), (3, 10, 128), (5, 100, 128), (5, 25, 2)])
   def test_restore_noclear(self, tmpdir, Replay, length, capacity, chunksize):
     embodied.uuid.reset(debug=True)
-    replay = Replay(length, capacity, directory=tmpdir, chunksize=chunksize)
+    replay = Replay(
+        length, capacity, directory=tmpdir, chunksize=chunksize,
+        save_wait=True)
     for _ in range(30):
       replay.add({'foo': 13})
     num_items = np.clip(30 - length + 1, 0, capacity)
     assert len(replay) == num_items
-    replay.save(wait=True)
+    data = replay.save()
     for _ in range(30):
       replay.add({'foo': 42})
-    replay.load()
-    dataset = iter(replay.dataset())
+    replay.load(data)
+    dataset = unbatched(replay.dataset(1))
     if capacity < num_items:
       for _ in range(len(replay)):
         assert next(dataset)['foo'] == 13
@@ -193,17 +201,18 @@ class TestReplay:
   @pytest.mark.parametrize('length,capacity', [(1, 1), (3, 10), (5, 100)])
   def test_restore_workers(self, tmpdir, Replay, workers, length, capacity):
     capacity *= workers
-    replay = Replay(length, capacity, directory=tmpdir)
+    replay = Replay(
+        length, capacity, directory=tmpdir, save_wait=True)
     for step in range(50):
       for worker in range(workers):
         replay.add({'step': step}, worker)
     num_items = np.clip((50 - length + 1) * workers, 0, capacity)
     assert len(replay) == num_items
-    replay.save(wait=True)
+    data = replay.save()
     replay = Replay(length, capacity, directory=tmpdir)
-    replay.load()
+    replay.load(data)
     assert len(replay) == num_items
-    dataset = iter(replay.dataset())
+    dataset = unbatched(replay.dataset(1))
     for _ in range(len(replay)):
       assert len(next(dataset)['step']) == length
 
@@ -214,22 +223,29 @@ class TestReplay:
       self, tmpdir, Replay, length, capacity, chunksize):
     embodied.uuid.reset(debug=True)
     assert len(list(embodied.Path(tmpdir).glob('*.npz'))) == 0
-    replay = Replay(length, capacity, directory=tmpdir, chunksize=chunksize)
+    replay = Replay(
+        length, capacity, directory=tmpdir, chunksize=chunksize,
+        save_wait=True)
     for step in range(30):
       replay.add({'step': step})
     num_items = np.clip(30 - length + 1, 0, capacity)
     assert len(replay) == num_items
-    replay.save(wait=True)
+    data = replay.save()
     filenames = list(embodied.Path(tmpdir).glob('*.npz'))
     lengths = [int(x.stem.split('-')[3]) for x in filenames]
-    assert len(filenames) == (int(np.ceil(30 / chunksize)))
-    assert sum(lengths) == 30
+    stored_steps = min(capacity + length - 1, 30)
+    total_chunks = int(np.ceil(30 / chunksize))
+    pruned_chunks = int(np.floor((30 - stored_steps) / chunksize))
+    assert len(filenames) == total_chunks - pruned_chunks
+    last_chunk_empty = total_chunks * chunksize - 30
+    saved_steps = (total_chunks - pruned_chunks) * chunksize - last_chunk_empty
+    assert sum(lengths) == saved_steps
     assert all(1 <= x <= chunksize for x in lengths)
     replay = Replay(length, capacity, directory=tmpdir, chunksize=chunksize)
-    replay.load()
+    replay.load(data)
     assert sorted(embodied.Path(tmpdir).glob('*.npz')) == sorted(filenames)
     assert len(replay) == num_items
-    dataset = iter(replay.dataset())
+    dataset = unbatched(replay.dataset(1))
     for _ in range(len(replay)):
       assert len(next(dataset)['step']) == length
 
@@ -240,20 +256,28 @@ class TestReplay:
   def test_restore_chunks_workers(
       self, tmpdir, Replay, workers, length, capacity, chunksize):
     capacity *= workers
-    replay = Replay(length, capacity, directory=tmpdir, chunksize=chunksize)
+    replay = Replay(
+        length, capacity, directory=tmpdir, chunksize=chunksize,
+        save_wait=True)
     for step in range(50):
       for worker in range(workers):
         replay.add({'step': step}, worker)
     num_items = np.clip((50 - length + 1) * workers, 0, capacity)
     assert len(replay) == num_items
-    replay.save(wait=True)
+    data = replay.save()
     filenames = list(embodied.Path(tmpdir).glob('*.npz'))
     lengths = [int(x.stem.split('-')[3]) for x in filenames]
-    assert sum(lengths) == 50 * workers
+    stored_steps = min(capacity // workers + length - 1, 50)
+    total_chunks = int(np.ceil(50 / chunksize))
+    pruned_chunks = int(np.floor((50 - stored_steps) / chunksize))
+    assert len(filenames) == (total_chunks - pruned_chunks) * workers
+    last_chunk_empty = total_chunks * chunksize - 50
+    saved_steps = (total_chunks - pruned_chunks) * chunksize - last_chunk_empty
+    assert sum(lengths) == saved_steps * workers
     replay = Replay(length, capacity, directory=tmpdir, chunksize=chunksize)
-    replay.load()
+    replay.load(data)
     assert len(replay) == num_items
-    dataset = iter(replay.dataset())
+    dataset = unbatched(replay.dataset(1))
     for _ in range(len(replay)):
       assert len(next(dataset)['step']) == length
 
@@ -263,17 +287,19 @@ class TestReplay:
       [(1, 1, 128), (3, 10, 128), (5, 100, 128), (5, 25, 2)])
   def test_restore_insert(self, tmpdir, Replay, length, capacity, chunksize):
     embodied.uuid.reset(debug=True)
-    replay = Replay(length, capacity, directory=tmpdir, chunksize=chunksize)
+    replay = Replay(
+        length, capacity, directory=tmpdir, chunksize=chunksize,
+        save_wait=True)
     inserts = int(1.5 * chunksize)
     for step in range(inserts):
       replay.add({'step': step})
     num_items = np.clip(inserts - length + 1, 0, capacity)
     assert len(replay) == num_items
-    replay.save(wait=True)
+    data = replay.save()
     replay = Replay(length, capacity, directory=tmpdir)
-    replay.load()
+    replay.load(data)
     assert len(replay) == num_items
-    dataset = iter(replay.dataset())
+    dataset = unbatched(replay.dataset(1))
     for _ in range(len(replay)):
       assert len(next(dataset)['step']) == length
     for step in range(inserts):
@@ -286,7 +312,9 @@ class TestReplay:
       self, tmpdir, Replay, length=5, capacity=128, chunksize=32,
       adders=8, samplers=4):
     embodied.uuid.reset(debug=True)
-    replay = Replay(length, capacity, directory=tmpdir, chunksize=chunksize)
+    replay = Replay(
+        length, capacity, directory=tmpdir, chunksize=chunksize,
+        save_wait=True)
     running = [True]
 
     def adder():
@@ -298,8 +326,7 @@ class TestReplay:
         time.sleep(0.001)
 
     def sampler():
-      ident = threading.get_ident()
-      dataset = iter(replay.dataset())
+      dataset = unbatched(replay.dataset(1))
       while running[0]:
         seq = next(dataset)
         assert (seq['step'] - seq['step'][0] == np.arange(length)).all()
@@ -321,109 +348,14 @@ class TestReplay:
         assert stats['samples'] > 0
 
         print('SAVING')
-        replay.save(wait=True)
+        data = replay.save()
         time.sleep(0.1)
 
         print('LOADING')
-        # replay = Replay(length, capacity, directory=tmpdir, chunksize=chunksize)
-        # replay.clear()
-        replay.load()
+        replay.load(data)
 
     finally:
       running[0] = False
       [worker.join() for worker in workers]
 
     assert len(replay) == capacity
-
-
-  # @pytest.mark.parametrize('Replay', REPLAYS_UNLIMITED)
-  # @pytest.mark.parametrize(
-  #     'length,capacity,chunksize,workers',
-  #     [(3, 100, 16, 4)])
-  # def test_restore_capacity(
-  #     self, tmpdir, Replay, length, capacity, chunksize, workers):
-  #   embodied.uuid.reset(debug=True)
-  #   replay = Replay(length, capacity, directory=tmpdir, chunksize=chunksize)
-
-  #   for step in range(500):
-  #     for worker in range(workers):
-  #       replay.add({'step': step}, worker=worker)
-
-  #   num_items = np.clip(workers * (500 - length + 1), 0, capacity)
-  #   assert len(replay) == num_items
-  #   replay.save(wait=True)
-  #   replay = Replay(length, capacity, directory=tmpdir)
-
-  #   rng = np.random.default_rng(seed=0)
-  #   filenames = sorted(embodied.Path(tmpdir).glob('*.npz'))
-  #   # for filename in rng.choice(filenames, min(100, len(filenames)), replace=False):
-  #   for filename in filenames[:120]:
-  #     filename.remove()
-
-  #   # for step in range(10):
-  #   #   for worker in range(workers):
-  #   #     replay.add({'step': step}, worker=worker)
-
-  #   replay.load()
-  #   assert len(replay) == num_items
-
-  #   # dataset = iter(replay.dataset())
-  #   # for _ in range(len(replay)):
-  #   #   assert len(next(dataset)['step']) == length
-  #   # for step in range(inserts):
-  #   #   replay.add({'step': step})
-  #   # num_items = np.clip(2 * (inserts - length + 1), 0, capacity)
-  #   # assert len(replay) == num_items
-
-
-  # @pytest.mark.parametrize('Replay', REPLAYS_QUEUES)
-  # @pytest.mark.parametrize(
-  #     'length,capacity,overlap',
-  #     [(1, 1, 0), (5, 10, 3), (10, 5, 2)])
-  # def test_queue_single(self, Replay, length, capacity, overlap):
-  #   replay = Replay(length, capacity, overlap=overlap)
-  #   for step in range(length):
-  #     replay.add({'step': step})
-  #   dataset = iter(replay.dataset())
-  #   seq = next(dataset)
-  #   assert (seq['step'] == np.arange(length)).all()
-
-  # @pytest.mark.parametrize('Replay', REPLAYS_QUEUES)
-  # @pytest.mark.parametrize(
-  #     'length,capacity,overlap',
-  #     [(1, 5, 0), (2, 5, 1), (5, 10, 3), (10, 5, 0), (10, 5, 2)])
-  # def test_queue_order(self, Replay, length, capacity, overlap):
-  #   assert overlap < length
-  #   assert 5 <= capacity
-  #   replay = Replay(length, capacity, overlap=overlap)
-  #   inserts = length + 4 * (length - overlap)
-  #   for step in range(inserts):
-  #     replay.add({'step': step})
-  #   dataset = iter(replay.dataset())
-  #   for index in range(len(replay)):
-  #     seq = next(dataset)
-  #     start = index * (length - overlap)
-  #     assert seq['step'][0] == start
-  #     assert (seq['step'] - start == np.arange(length)).all()
-
-  # @pytest.mark.parametrize('Replay', REPLAYS_QUEUES)
-  # @pytest.mark.parametrize(
-  #     'length,capacity,overlap,workers',
-  #     [(1, 10, 0, 2), (2, 10, 1, 2), (5, 30, 3, 4)])
-  # def test_queue_workers(self, Replay, length, capacity, overlap, workers):
-  #   assert overlap < length
-  #   assert 5 * workers <= capacity
-  #   replay = Replay(length, capacity, overlap=overlap)
-  #   inserts = length + 4 * (length - overlap)
-  #   for step in range(inserts):
-  #     for worker in range(workers):
-  #       replay.add({'step': step, 'worker': worker}, worker)
-  #   dataset = iter(replay.dataset())
-  #   assert len(replay) == 5 * workers
-  #   for index in range(5):
-  #     for worker in range(workers):
-  #       seq = next(dataset)
-  #       start = index * (length - overlap)
-  #       assert seq['step'][0] == start
-  #       assert (seq['worker'] == worker).all()
-  #       assert (seq['step'] - start == np.arange(length)).all()

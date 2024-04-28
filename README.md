@@ -48,7 +48,7 @@ increases data efficiency.
 
 # Instructions
 
-The code has been tested on Linux and Mac.
+The code has been tested on Linux and Mac and requires Python 3.11+.
 
 ## Docker
 
@@ -105,8 +105,8 @@ such as `--configs atari --task atari_pong`.
 - Many environments are included, some of which require installing additional
   packages. See the `Dockerfile` for reference.
 - When running on custom environments, make sure to specify the observation
-  keys the agent should be using via `enc.simple.mlp_keys`,
-  `enc.simple.cnn_keys`, `dec.simple.mlp_keys` and `dec.simple.cnn_keys`.
+  keys the agent should be using via the `enc.spaces` and `dec.spaces` regex
+  patterns.
 - To log metrics from environments without showing them to the agent or storing
   them in the replay buffer, return them as observation keys with `log_` prefix
   and enable logging via the `run.log_keys_...` options.

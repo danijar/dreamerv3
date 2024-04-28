@@ -25,9 +25,9 @@ class Agent:
     raise NotImplementedError(
         'train(data, carry=None) -> outs, carry, metrics')
 
-  def report(self, data):
+  def report(self, data, carry=None):
     raise NotImplementedError(
-        'report(data) -> metrics')
+        'report(data, carry=None) -> metrics, carry')
 
   def dataset(self, generator_fn):
     raise NotImplementedError(

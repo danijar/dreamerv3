@@ -76,6 +76,7 @@ def train(make_agent, make_replay, make_env, make_logger, args):
   dataset_report = iter(agent.dataset(bind(
       replay.dataset, args.batch_size, args.batch_length_eval)))
   carry = [agent.init_train(args.batch_size)]
+  carry_report = agent.init_report(args.batch_size)
 
   def train_step(tran, worker):
     if len(replay) < args.batch_size or step < args.train_fill:
@@ -108,7 +109,8 @@ def train(make_agent, make_replay, make_env, make_logger, args):
     driver(policy, steps=10)
 
     if should_eval(step) and len(replay):
-      logger.add(agent.report(next(dataset_report)), prefix='report')
+      mets, _ = agent.report(next(dataset_report), carry_report)
+      logger.add(mets, prefix='report')
 
     if should_log(step):
       logger.add(agg.result())

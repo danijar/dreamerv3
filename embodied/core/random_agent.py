@@ -13,6 +13,9 @@ class RandomAgent:
   def init_train(self, batch_size):
     return ()
 
+  def init_report(self, batch_size):
+    return ()
+
   def policy(self, obs, carry=(), mode='train'):
     batch_size = len(obs['is_first'])
     act = {
@@ -26,9 +29,9 @@ class RandomAgent:
     metrics = {}
     return outs, carry, metrics
 
-  def report(self, data):
+  def report(self, data, carry=()):
     report = {}
-    return report
+    return report, carry
 
   def dataset(self, generator):
     return generator()

@@ -52,7 +52,7 @@ class TestDriver:
     seq = []
     driver.on_step(lambda tran, _: seq.append(tran))
     action = np.array([1])
-    driver(lambda obs, state: ({'action': action}, state), episodes=2)
+    driver(lambda obs, state: ({'action': action}, {}, state), episodes=2)
     assert len(seq) == 12
     seq = {k: np.array([seq[i][k] for i in range(len(seq))]) for k in seq[0]}
     assert (seq['is_first'] == [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]).all()
@@ -69,8 +69,8 @@ class TestDriver:
     def policy(obs, state=None, mode='train'):
       inputs.append(obs)
       states.append(state)
-      act, _ = agent.policy(obs, state, mode)
-      return act, 'state'
+      act, _, _ = agent.policy(obs, state, mode)
+      return act, {}, 'state'
     seq = []
     driver.on_step(lambda tran, _: seq.append(tran))
     driver(policy, episodes=2)

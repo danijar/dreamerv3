@@ -348,6 +348,31 @@ class MLFlowOutput:
       self._mlflow.start_run(run_name=run_name, tags=tags)
 
 
+class ExpaOutput:
+
+  def __init__(self, exp, run, project, user, config=None):
+    try:
+      import expa
+      print(f'Expa: {exp}/{run} ({project})')
+      self._expa = expa.Logger(
+          exp, run, project, user, api_url='pubsub://expa-dev/ingest')
+      if config:
+        self._expa.log_params(dict(config))
+    except Exception as e:
+      print(f'Error exporting Expa: {e}')
+      self._expa = None
+      return
+
+  def __call__(self, summaries):
+    if not self._expa:
+      return
+    bystep = collections.defaultdict(dict)
+    for step, name, value in summaries:
+      bystep[step][name] = value
+    for step, metrics in bystep.items():
+      self._expa.log(metrics, step)
+
+
 @timer.section('gif')
 def _encode_gif(frames, fps):
   from subprocess import Popen, PIPE

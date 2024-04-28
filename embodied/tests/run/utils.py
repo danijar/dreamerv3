@@ -37,6 +37,9 @@ class TestAgent:
   def init_train(self, batch_size):
     return (np.zeros(batch_size),)
 
+  def init_report(self, batch_size):
+    return ()
+
   def policy(self, obs, carry, mode='train'):
     B = len(obs['is_first'])
     self._stats['env_steps'] += B
@@ -56,7 +59,7 @@ class TestAgent:
     act = {
         k: np.stack([v.sample() for _ in range(B)])
         for k, v in self.act_space.items() if k != 'reset'}
-    return act, (carry,)
+    return act, {}, (carry,)
 
   def train(self, data, carry):
     B, T = data['step'].shape
@@ -75,7 +78,7 @@ class TestAgent:
     metrics = {}
     return outs, (carry,), metrics
 
-  def report(self, data):
+  def report(self, data, carry):
     self._stats['reports'] += 1
     return {
         'scalar': np.float32(0),
@@ -83,7 +86,7 @@ class TestAgent:
         'image1': np.zeros((64, 64, 1)),
         'image3': np.zeros((64, 64, 3)),
         'video': np.zeros((10, 64, 64, 3)),
-    }
+    }, carry
 
   def dataset(self, generator):
     return generator()

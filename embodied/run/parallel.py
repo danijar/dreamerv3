@@ -110,8 +110,8 @@ def parallel_learner(agent, barrier, args):
   should_log = embodied.when.Clock(args.log_every)
   should_eval = embodied.when.Clock(args.eval_every)
   should_save = embodied.when.Clock(args.save_every)
-  batch_steps = args.batch_size * (args.batch_length - args.replay_context)
   fps = embodied.FPS()
+  batch_steps = args.batch_size * (args.batch_length - args.replay_context)
 
   checkpoint = embodied.Checkpoint(logdir / 'checkpoint.ckpt')
   checkpoint.agent = agent
@@ -140,7 +140,8 @@ def parallel_learner(agent, barrier, args):
 
   dataset_train = agent.dataset(bind(parallel_dataset, 'sample_batch_train'))
   dataset_report = agent.dataset(bind(parallel_dataset, 'sample_batch_report'))
-  state = agent.init_train(args.batch_size)
+  carry = agent.init_train(args.batch_size)
+  carry_report = agent.init_report(args.batch_size)
   should_save()  # Delay first save.
   should_eval()  # Delay first eval.
 
@@ -149,7 +150,7 @@ def parallel_learner(agent, barrier, args):
     with embodied.timer.section('learner_batch_next'):
       batch = next(dataset_train)
     with embodied.timer.section('learner_train_step'):
-      outs, state, mets = agent.train(batch, state)
+      outs, carry, mets = agent.train(batch, carry)
     if 'replay' in outs:
       with embodied.timer.section('learner_replay_update'):
         updater.update(outs['replay'])
@@ -159,7 +160,8 @@ def parallel_learner(agent, barrier, args):
 
     if should_eval():
       with embodied.timer.section('learner_eval'):
-        logger.add(prefix(agent.report(next(dataset_report)), 'report'))
+        mets, _ = agent.report(next(dataset_report), carry_report)
+        logger.add(prefix(mets, 'report'))
 
     if should_log():
       with embodied.timer.section('learner_metrics'):

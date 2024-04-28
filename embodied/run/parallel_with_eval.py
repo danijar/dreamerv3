@@ -119,8 +119,8 @@ def parallel_learner(agent, barrier, args):
   should_log = embodied.when.Clock(args.log_every)
   should_eval = embodied.when.Clock(args.eval_every)
   should_save = embodied.when.Clock(args.save_every)
-  batch_steps = args.batch_size * (args.batch_length - args.replay_context)
   fps = embodied.FPS()
+  batch_steps = args.batch_size * (args.batch_length - args.replay_context)
 
   checkpoint = embodied.Checkpoint(logdir / 'checkpoint.ckpt')
   checkpoint.agent = agent
@@ -150,10 +150,20 @@ def parallel_learner(agent, barrier, args):
       received[source] += 1
       yield batch
 
+  def evaluate(dataset):
+    num_batches = args.replay_length_eval // args.batch_length_eval
+    carry = agent.init_report(args.batch_size)
+    agg = embodied.Agg()
+    for _ in range(num_batches):
+      batch = next(dataset)
+      metrics, carry = agent.report(batch, carry)
+      agg.add(metrics)
+    return agg.result()
+
   dataset_train = agent.dataset(bind(parallel_dataset, 'train'))
   dataset_report = agent.dataset(bind(parallel_dataset, 'report'))
   dataset_eval = agent.dataset(bind(parallel_dataset, 'eval'))
-  state = agent.init_train(args.batch_size)
+  carry = agent.init_train(args.batch_size)
   should_save()  # Delay first save.
   should_eval()  # Delay first eval.
 
@@ -162,7 +172,7 @@ def parallel_learner(agent, barrier, args):
     with embodied.timer.section('learner_batch_next'):
       batch = next(dataset_train)
     with embodied.timer.section('learner_train_step'):
-      outs, state, mets = agent.train(batch, state)
+      outs, carry, mets = agent.train(batch, carry)
     if 'replay' in outs:
       with embodied.timer.section('learner_replay_update'):
         updater.update(outs['replay'])
@@ -173,9 +183,9 @@ def parallel_learner(agent, barrier, args):
     if should_eval():
       with embodied.timer.section('learner_eval'):
         if received['report'] > 0:
-          logger.add(prefix(agent.report(next(dataset_report)), 'report'))
+          logger.add(prefix(evaluate(dataset_report), 'report'))
         if received['eval'] > 0:
-          logger.add(prefix(agent.report(next(dataset_eval)), 'eval'))
+          logger.add(prefix(evaluate(dataset_eval), 'eval'))
 
     if should_log():
       with embodied.timer.section('learner_metrics'):
@@ -355,7 +365,7 @@ def parallel_env(make_env, envid, args, logging=False, is_eval=False):
 
   _print = lambda x: embodied.print(f'[{name}] {x}', flush=True)
   should_log = embodied.when.Clock(args.log_every)
-  if logging:
+  if logging and envid == 0:
     logger = embodied.distr.Client(
         args.logger_addr, f'{name}Logger', args.ipv6,
         maxinflight=1, connect=True)

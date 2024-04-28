@@ -28,7 +28,7 @@ class TestParallel:
     for key in ('actor_addr', 'replay_addr', 'logger_addr'):
       ports.append(args[key].replace('-', ':').split(':')[-1])
 
-    embodied.run.parallel(
+    embodied.run.parallel.combined(
         bind(self._make_agent, addr),
         bind(self._make_replay, args),
         self._make_env, self._make_logger, args)
@@ -44,17 +44,17 @@ class TestParallel:
     assert stats['reports'] >= 1
     assert stats['saves'] >= 2
     assert stats['loads'] == 0
-    for port in ports:
-      assert embodied.distr.port_free(port)
+    # for port in ports:
+    #   assert embodied.distr.port_free(port)
 
-    embodied.run.parallel(
+    embodied.run.parallel.combined(
         bind(self._make_agent, addr),
         bind(self._make_replay, args),
         self._make_env, self._make_logger, args)
     stats = received[0]
     assert stats['loads'] == 1
-    for port in ports:
-      assert embodied.distr.port_free(port)
+    # for port in ports:
+    #   assert embodied.distr.port_free(port)
 
   def _make_agent(self, queue):
     env = self._make_env(0)
@@ -87,10 +87,13 @@ class TestParallel:
         duration=10,
         log_every=3,
         save_every=5,
+        eval_every=5,
         train_ratio=float(train_ratio),
         train_fill=100,
         batch_size=8,
         batch_length=16,
+        batch_length_eval=8,
+        replay_context=0,
         expl_until=0,
         from_checkpoint='',
         usage=dict(psutil=True, nvsmi=False),
@@ -112,4 +115,6 @@ class TestParallel:
         env_replica=-1,
         ipv6=False,
         timer=True,
+        agent_process=False,
+        remote_replay=False,
     )

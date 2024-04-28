@@ -87,7 +87,7 @@ class JAXAgent(embodied.Agent):
     self._train = self._train.compile()
     self._report = self._report.compile()
     self._stack = jax.jit(lambda xs: jax.tree.map(
-          jnp.stack, xs, is_leaf=lambda x: isinstance(x, list)))
+        jnp.stack, xs, is_leaf=lambda x: isinstance(x, list)))
     self._split = jax.jit(lambda xs: jax.tree.map(
         lambda x: [y[0] for y in jnp.split(x, len(x))], xs))
     print('Done compiling train and report!')
@@ -106,6 +106,12 @@ class JAXAgent(embodied.Agent):
     seed = self._next_seeds(self.train_sharded)
     batch_size //= len(self.train_mesh.devices)
     carry = self._init_train(self.params, seed, batch_size)
+    return carry
+
+  def init_report(self, batch_size):
+    seed = self._next_seeds(self.train_sharded)
+    batch_size //= len(self.train_mesh.devices)
+    carry = self._init_report(self.params, seed, batch_size)
     return carry
 
   @embodied.timer.section('jaxagent_policy')
@@ -215,14 +221,14 @@ class JAXAgent(embodied.Agent):
     return return_outs, carry, return_mets
 
   @embodied.timer.section('jaxagent_report')
-  def report(self, data):
+  def report(self, data, carry):
     seed = data['seed']
     data = self._filter_data(data)
     with embodied.timer.section('jit_report'):
       with self.train_lock:
-        mets = self._report(self.params, data, seed)
+        mets, carry = self._report(self.params, data, carry, seed)
         mets = self._take_mets(fetch_async(mets))
-    return mets
+    return mets, carry
 
   def dataset(self, generator):
     def transform(data):
@@ -307,10 +313,15 @@ class JAXAgent(embodied.Agent):
       mets = {k: v[None] for k, v in mets.items()}
       return params, outs, carry, mets
 
-    def report(params, data, seed):
+    def init_report(params, seed, batch_size):
+      pure = nj.pure(self.agent.init_report)
+      return pure(params, batch_size, seed=seed)[1]
+
+    def report(params, data, carry, seed):
       pure = nj.pure(self.agent.report)
-      _, mets = pure(params, data, seed=seed)
-      return {k: v[None] for k, v in mets.items()}
+      _, (mets, carry) = pure(params, data, carry, seed=seed)
+      mets = {k: v[None] for k, v in mets.items()}
+      return mets, carry
 
     from jax.experimental.shard_map import shard_map
     s = jax.sharding.PartitionSpec('i')  # sharded
@@ -330,9 +341,12 @@ class JAXAgent(embodied.Agent):
       train = shard_map(
           train, self.train_mesh,
           (m, m, s, s, s), (m, s, s, m), check_rep=False)
+      init_report = lambda params, seed, batch_size, fn=init_report: shard_map(
+          lambda params, seed: fn(params, seed, batch_size),
+          self.train_mesh, (m, s), s, check_rep=False)(params, seed)
       report = shard_map(
           report, self.train_mesh,
-          (m, s, s), m, check_rep=False)
+          (m, s, s, s), (m, s), check_rep=False)
 
     ps, pm = self.policy_sharded, self.policy_mirrored
     self._init_policy = jax.jit(
@@ -345,8 +359,10 @@ class JAXAgent(embodied.Agent):
         init_train, (tm, ts), ts, static_argnames=['batch_size'])
     self._train = jax.jit(
         train, (tm, tm, ts, ts, ts), (tm, ts, ts, tm), donate_argnums=[1])
+    self._init_report = jax.jit(
+        init_report, (tm, ts), ts, static_argnames=['batch_size'])
     self._report = jax.jit(
-        report, (tm, ts, ts), tm)
+        report, (tm, ts, ts, ts), (tm, ts))
 
   def _take_mets(self, mets):
     mets = jax.tree.map(lambda x: x.__array__(), mets)
@@ -405,7 +421,8 @@ class JAXAgent(embodied.Agent):
     data = self._dummy_batch(self.spaces, (B, T))
     data = jax.device_put(data, self.train_sharded)
     seed = self._next_seeds(self.train_sharded)
-    self._report = self._report.lower(self.params, data, seed)
+    carry = self.init_report(self.config.batch_size)
+    self._report = self._report.lower(self.params, data, carry, seed)
 
 
 def fetch_async(value):

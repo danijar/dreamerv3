@@ -111,8 +111,6 @@ class Recency:
 
 class Prioritized:
 
-  # TODO: Checkpoint priorities.
-
   def __init__(
       self, exponent=1.0, initial=1.0, zero_on_sample=False,
       maxfrac=0.0, branching=16, seed=0):

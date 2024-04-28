@@ -17,7 +17,7 @@ class Replay:
   def __init__(
       self, length, capacity=None, directory=None, chunksize=1024, min_size=1,
       samples_per_insert=None, tolerance=1e4, online=False, selector=None,
-      debug_save_wait=False, seed=0):
+      save_wait=False, seed=0):
     assert not capacity or min_size <= capacity
 
     self.length = length
@@ -57,7 +57,7 @@ class Replay:
     else:
       self.directory = None
 
-    self.debug_save_wait = debug_save_wait
+    self.save_wait = save_wait
 
     self.metrics = {
         'samples': 0,
@@ -285,8 +285,8 @@ class Replay:
         for key, parts in seqs[0].items()}
     for n, seq in enumerate(seqs):
       st, dt = 0, 0  # Source and destination time index.
-      for p in range(len(seq['is_first'])):
-        partlen = len(seq['is_first'][p])
+      for p in range(len(seq['stepid'])):
+        partlen = len(seq['stepid'][p])
         if start < st + partlen:
           part_start = max(0, start - st)
           part_stop = min(stop - st, partlen)
@@ -329,7 +329,7 @@ class Replay:
           if chunk.length > 0 and chunk.uuid not in self.saved:
             self.saved.add(chunk.uuid)
             promises.append(self.workers.submit(chunk.save, self.directory))
-        if self.debug_save_wait:
+        if self.save_wait:
           [promise.result() for promise in promises]
     return {'limiter': self.limiter.save()}
 

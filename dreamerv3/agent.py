@@ -43,8 +43,6 @@ class Agent(nj.Module):
         not k.startswith('log_') and re.match(config.dec.spaces, k)}
     embodied.print('Encoder:', {k: v.shape for k, v in enc_space.items()})
     embodied.print('Decoder:', {k: v.shape for k, v in dec_space.items()})
-    # nets.Initializer.VARIANCE_FACTOR = self.config.init_scale
-    nets.Initializer.FORCE_STDDEV = self.config.winit_scale
 
     # World Model
     self.enc = {
@@ -85,16 +83,6 @@ class Agent(nj.Module):
     # Optimizer
     kw = dict(config.opt)
     lr = kw.pop('lr')
-    if config.compute_lr:
-      assert not config.separate_lrs
-      width = float(config.actor.units)
-      replay = float(config.run.train_ratio)
-      a = config.compute_lr_params.lnwidth
-      b = config.compute_lr_params.lnreplay
-      c = config.compute_lr_params.bias
-      lr = np.exp(a * np.log(width) + b * np.log(replay) + c)
-      message = f'Computed LR (width={width}, replay={replay}): {lr:.1e}'
-      embodied.print(message)
     if config.separate_lrs:
       lr = {f'agent/{k}': v for k, v in config.lrs.items()}
     self.opt = jaxutils.Optimizer(lr, **kw, name='opt')
@@ -114,20 +102,13 @@ class Agent(nj.Module):
 
   @property
   def aux_spaces(self):
-    import numpy as np
     spaces = {}
     spaces['stepid'] = embodied.Space(np.uint8, 20)
     if self.config.replay_context:
-      latshape = (self.config.dyn.rssm.stoch, self.config.dyn.rssm.classes)
       latdtype = jaxutils.COMPUTE_DTYPE
       latdtype = np.float32 if latdtype == jnp.bfloat16 else latdtype
-      if self.config.dyn.typ == 'rssm':
-        spaces['deter'] = embodied.Space(latdtype, self.config.dyn.rssm.deter)
-      else:
-        for i in range(6):
-          spaces[f'deter{i}'] = embodied.Space(
-              latdtype, self.config.dyn.stack.rnndim)
-      spaces['stoch'] = embodied.Space(np.int32, latshape[:-1])
+      spaces['deter'] = embodied.Space(latdtype, self.config.dyn.rssm.deter)
+      spaces['stoch'] = embodied.Space(np.int32, self.config.dyn.rssm.stoch)
     return spaces
 
   def init_policy(self, batch_size):
@@ -141,6 +122,9 @@ class Agent(nj.Module):
         k: jnp.zeros((batch_size, *v.shape), v.dtype)
         for k, v in self.act_space.items()}
     return (self.dyn.initial(batch_size), prevact)
+
+  def init_report(self, batch_size):
+    return self.init_train(batch_size)
 
   def policy(self, obs, carry, mode='train'):
     self.config.jax.jit and embodied.print(
@@ -332,13 +316,8 @@ class Agent(nj.Module):
     adv_normed = (adv - aoffset) / ascale
     logpi = sum([v.log_prob(sg(acts[k]))[:, :-1] for k, v in actor.items()])
     ents = {k: v.entropy()[:, :-1] for k, v in actor.items()}
-    if self.config.scale_by_actent:
-      actor_loss = sg(weight[:, :-1]) * -(
-          logpi * sg(adv_normed) * (1 / self.config.actent) +
-          sum(ents.values()))
-    else:
-      actor_loss = sg(weight[:, :-1]) * -(
-          logpi * sg(adv_normed) + self.config.actent * sum(ents.values()))
+    actor_loss = sg(weight[:, :-1]) * -(
+        logpi * sg(adv_normed) + self.config.actent * sum(ents.values()))
     losses['actor'] = actor_loss
 
     # Critic
@@ -414,34 +393,55 @@ class Agent(nj.Module):
     losses = {k: v * self.scales[k] for k, v in losses.items()}
     loss = jnp.stack([v.mean() for k, v in losses.items()]).sum()
     newact = {k: data[k][:, -1] for k in self.act_space}
-    outs = {'replay_outs': replay_outs, 'prevacts': prevacts}
+    outs = {'replay_outs': replay_outs, 'prevacts': prevacts, 'embed': embed}
     outs.update({f'{k}_loss': v for k, v in losses.items()})
     carry = (newlat, newact)
     return loss, (outs, carry, metrics)
 
-  def report(self, data):
+  def report(self, data, carry):
     self.config.jax.jit and embodied.print(
         'Tracing report function', color='yellow')
     if not self.config.report:
-      return {}
+      return {}, carry
     metrics = {}
     data = self.preprocess(data)
 
     # Train metrics
-    carry = self.init_train(len(data['is_first']))
-    _, (outs, _, mets) = self.loss(data, carry, update=False)
+    _, (outs, carry_out, mets) = self.loss(data, carry, update=False)
     metrics.update(mets)
 
+    # Open loop predictions
+    B, T = data['is_first'].shape
+    num_obs = min(self.config.report_openl_context, T // 2)
+    # Rerun observe to get the correct intermediate state, because
+    # outs_to_carry doesn't work with num_obs<context.
+    img_start, rec_outs = self.dyn.observe(
+        carry[0],
+        {k: v[:, :num_obs] for k, v in outs['prevacts'].items()},
+        outs['embed'][:, :num_obs],
+        data['is_first'][:, :num_obs])
+    img_acts = {k: v[:, num_obs:] for k, v in outs['prevacts'].items()}
+    img_outs = self.dyn.imagine(img_start, img_acts)[1]
+    rec = dict(
+        **self.dec(rec_outs), reward=self.rew(rec_outs),
+        cont=self.con(rec_outs))
+    img = dict(
+        **self.dec(img_outs), reward=self.rew(img_outs),
+        cont=self.con(img_outs))
+
+    # Prediction losses
+    data_img = {k: v[:, num_obs:] for k, v in data.items()}
+    losses = {k: -v.log_prob(data_img[k].astype(f32)) for k, v in img.items()}
+    metrics.update({f'openl_{k}_loss': v.mean() for k, v in losses.items()})
+    stats = jaxutils.balance_stats(img['reward'], data_img['reward'], 0.1)
+    metrics.update({f'openl_reward_{k}': v for k, v in stats.items()})
+    stats = jaxutils.balance_stats(img['cont'], data_img['cont'], 0.5)
+    metrics.update({f'openl_cont_{k}': v for k, v in stats.items()})
+
     # Video predictions
-    future_acts = {k: v[:6, 8:] for k, v in outs['prevacts'].items()}
-    context_outs = {k: v[:6, :8] for k, v in outs['replay_outs'].items()}
-    start = self.dyn.outs_to_carry(context_outs)
-    recon = self.dec(context_outs)
-    openl = self.dec(self.dyn.imagine(start, future_acts)[1])
     for key in self.dec.imgkeys:
       true = f32(data[key][:6])
-      pred = jnp.concatenate([
-          recon[key].mode()[:, :8], openl[key].mode()], 1)
+      pred = jnp.concatenate([rec[key].mode()[:6], img[key].mode()[:6]], 1)
       error = (pred - true + 1) / 2
       video = jnp.concatenate([true, pred, error], 2)
       metrics[f'openloop/{key}'] = jaxutils.video_grid(video)
@@ -457,7 +457,7 @@ class Agent(nj.Module):
         except KeyError:
           print(f'Skipping gradnorm summary for missing loss: {key}')
 
-    return metrics
+    return metrics, carry_out
 
   def preprocess(self, obs):
     spaces = {**self.obs_space, **self.act_space, **self.aux_spaces}
@@ -471,5 +471,3 @@ class Agent(nj.Module):
       result[key] = value
     result['cont'] = 1.0 - f32(result['is_terminal'])
     return result
-
-

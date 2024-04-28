@@ -91,6 +91,7 @@ def train_eval(
   dataset_eval = agent.dataset(
       bind(eval_replay.dataset, args.batch_size, args.batch_length_eval))
   carry = [agent.init_train(args.batch_size)]
+  carry_report = agent.init_report(args.batch_size)
 
   def train_step(tran, worker):
     if len(train_replay) < args.batch_size or step < args.train_fill:
@@ -128,9 +129,11 @@ def train_eval(
       eval_driver(eval_policy, episodes=args.eval_eps)
       logger.add(eval_epstats.result(), prefix='epstats')
       if len(train_replay):
-        logger.add(agent.report(next(dataset_report)), prefix='report')
+        mets, _ = agent.report(next(dataset_report), carry_report)
+        logger.add(mets, prefix='report')
       if len(eval_replay):
-        logger.add(agent.report(next(dataset_eval)), prefix='eval')
+        mets, _ = agent.report(next(dataset_eval), carry_report)
+        logger.add(mets, prefix='eval')
 
     train_driver(train_policy, steps=10)
 

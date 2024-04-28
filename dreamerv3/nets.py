@@ -230,7 +230,7 @@ class SimpleEncoder(nj.Module):
   norm: str = 'rms'
   act: str = 'gelu'
   kernel: int = 4
-  debug_outer: bool = False
+  outer: bool = False
   minres: int = 4
 
   def __init__(self, spaces, **kw):
@@ -260,7 +260,7 @@ class SimpleEncoder(nj.Module):
       x = self.imginp(data, bdims, jaxutils.COMPUTE_DTYPE) - 0.5
       x = x.reshape((-1, *x.shape[bdims:]))
       for i, depth in enumerate(self.depths):
-        stride = 1 if self.debug_outer and i == 0 else 2
+        stride = 1 if self.outer and i == 0 else 2
         x = self.get(f'conv{i}', Conv2D, depth, self.kernel, stride, **kw)(x)
       assert x.shape[-3] == x.shape[-2] == self.minres, x.shape
       x = x.reshape((x.shape[0], -1))
@@ -285,7 +285,7 @@ class SimpleDecoder(nj.Module):
   outscale: float = 1.0
   vecdist: str = 'symlog_mse'
   kernel: int = 4
-  debug_outer: bool = False
+  outer: bool = False
   block_fans: bool = False
   block_norm: bool = False
   block_space: int = 0
@@ -351,7 +351,7 @@ class SimpleDecoder(nj.Module):
         x = self.get(
             f'conv{i}', Conv2D, depth, self.kernel, 2, **kw, transp=True)(x)
       outkw = dict(**self.kw, outscale=self.outscale, transp=True)
-      stride = 1 if self.debug_outer else 2
+      stride = 1 if self.outer else 2
       x = self.get(
           'imgout', Conv2D, self.imgdep, self.kernel, stride, **outkw)(x)
       x = jax.nn.sigmoid(x) if self.sigmoid else x + 0.5
@@ -816,7 +816,6 @@ class Input:
 class Initializer:
 
   VARIANCE_FACTOR = 1.0
-  FORCE_STDDEV = 0.0
 
   def __init__(
       self, dist='normal', scale=1.0, fan='in', dtype='default',
@@ -841,10 +840,7 @@ class Initializer:
       value = jax.random.uniform(nj.seed(), shape, dtype, -limit, limit)
     elif self.dist == 'normal':
       value = jax.random.truncated_normal(nj.seed(), -2, 2, shape)
-      if self.FORCE_STDDEV > 0.0:
-        value *= 1.1368 * self.FORCE_STDDEV
-      else:
-        value *= 1.1368 * np.sqrt(self.VARIANCE_FACTOR / fan)
+      value *= 1.1368 * np.sqrt(self.VARIANCE_FACTOR / fan)
       value = value.astype(dtype)
     elif self.dist == 'normed':
       value = jax.random.uniform(nj.seed(), shape, dtype, -1, 1)

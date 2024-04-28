@@ -16,7 +16,7 @@ defaults:
     priosignal: model
     recexp: 1.0
     chunksize: 1024
-    debug_save_wait: False
+    save_wait: False
 
   jax:
     platform: gpu
@@ -91,12 +91,12 @@ defaults:
   batch_size: 16
   batch_length: 65
   batch_length_eval: 33
+  replay_length: 0
+  replay_length_eval: 0
   replay_context: 1
   random_agent: False
   loss_scales: {dec_cnn: 1.0, dec_mlp: 1.0, reward: 1.0, cont: 1.0, dyn: 1.0, rep: 0.1, actor: 1.0, critic: 1.0, replay_critic: 0.3}
   opt: {scaler: rms, lr: 4e-5, eps: 1e-20, momentum: True, wd: 0.0, warmup: 1000, globclip: 0.0, agc: 0.3, beta1: 0.9, beta2: 0.999, details: False, pmin: 1e-3, anneal: 0, schedule: constant}
-  compute_lr: False
-  compute_lr_params: {lnwidth: -1.195, lnreplay: -0.529, bias: 0}
   separate_lrs: False
   lrs: {dec: 1e-4, enc: 1e-4, dyn: 1e-4, rew: 1e-4, con: 1e-4, actor: 3e-5, critic: 3e-5}
   ac_grads: none
@@ -105,7 +105,7 @@ defaults:
   replay_critic_grad: True
   replay_critic_bootstrap: imag
   reward_grad: True
-  winit_scale: 0.0
+  report_openl_context: 8
 
   # World Model
   dyn:
@@ -114,11 +114,11 @@ defaults:
   enc:
     spaces: '.*'
     typ: simple
-    simple: {depth: 64, mults: [1, 2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, winit: normal, symlog: True, debug_outer: True, kernel: 5, minres: 4}
+    simple: {depth: 64, mults: [1, 2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, winit: normal, symlog: True, outer: True, kernel: 5, minres: 4}
   dec:
     spaces: '.*'
     typ: simple
-    simple: {inputs: [deter, stoch], vecdist: symlog_mse, depth: 64, mults: [1, 2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, outscale: 1.0, winit: normal, debug_outer: True, kernel: 5, minres: 4, block_space: 8, block_fans: False, block_norm: False, hidden_stoch: True, space_hidden: 0}
+    simple: {inputs: [deter, stoch], vecdist: symlog_mse, depth: 64, mults: [1, 2, 3, 4, 4], layers: 3, units: 1024, act: silu, norm: rms, outscale: 1.0, winit: normal, outer: True, kernel: 5, minres: 4, block_space: 8, block_fans: False, block_norm: False, hidden_stoch: True, space_hidden: 0}
   rewhead: {layers: 1, units: 1024, act: silu, norm: rms, dist: symexp_twohot, outscale: 0.0, inputs: [deter, stoch], winit: normal, bins: 255, block_fans: False, block_norm: False}
   conhead: {layers: 1, units: 1024, act: silu, norm: rms, dist: binary, outscale: 1.0, inputs: [deter, stoch], winit: normal, block_fans: False, block_norm: False}
   contdisc: True
@@ -144,7 +144,6 @@ defaults:
   actent: 3e-4
   slowreg: 1.0
   slowtar: False
-  scale_by_actent: False
 
 size12m: &size12m
   dyn.rssm: {deter: 2048, hidden: 256, classes: 16}

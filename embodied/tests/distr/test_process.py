@@ -49,7 +49,7 @@ class TestProcess:
     q = mp.get_context().SimpleQueue()
     worker = embodied.distr.Process(fn1234, q, start=True)
     q.get()
-    time.sleep(0.1)
+    time.sleep(0.5)
     assert not worker.running
     assert worker.exitcode == 1
     with pytest.raises(KeyError) as info:

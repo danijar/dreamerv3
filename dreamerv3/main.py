@@ -33,19 +33,23 @@ def main(argv=None):
     config = config.update(agt.Agent.configs[name])
   config = embodied.Flags(config).parse(other)
   config = config.update(
-      logdir=config.logdir.format(timestamp=embodied.timestamp()))
+      logdir=config.logdir.format(timestamp=embodied.timestamp()),
+      replay_length=config.replay_length or config.batch_length,
+      replay_length_eval=config.replay_length_eval or config.batch_length_eval)
   args = embodied.Config(
       **config.run,
       logdir=config.logdir,
       batch_size=config.batch_size,
       batch_length=config.batch_length,
       batch_length_eval=config.batch_length_eval,
+      replay_length=config.replay_length,
+      replay_length_eval=config.replay_length_eval,
       replay_context=config.replay_context)
   print('Run script:', args.script)
   print('Logdir:', args.logdir)
 
   logdir = embodied.Path(args.logdir)
-  if args.script not in ('env', 'replay'):
+  if not args.script.endswith(('_env', '_replay')):
     logdir.mkdir()
     config.save(logdir / 'config.yaml')
 
@@ -100,8 +104,30 @@ def main(argv=None):
         bind(make_env, config), envid, args, False)
 
   elif args.script == 'parallel_replay':
-      embodied.run.parallel.replay(
-          bind(make_replay, config, 'replay', rate_limit=True), args)
+    embodied.run.parallel.replay(
+        bind(make_replay, config, 'replay', rate_limit=True), args)
+
+  elif args.script == 'parallel_with_eval':
+    embodied.run.parallel_with_eval.combined(
+        bind(make_agent, config),
+        bind(make_replay, config, 'replay', rate_limit=True),
+        bind(make_replay, config, 'replay_eval', is_eval=True),
+        bind(make_env, config),
+        bind(make_env, config),
+        bind(make_logger, config), args)
+
+  elif args.script == 'parallel_with_eval_env':
+    envid = args.env_replica
+    if envid < 0:
+      envid = int(os.environ['JOB_COMPLETION_INDEX'])
+    is_eval = envid >= args.num_envs
+    embodied.run.parallel_with_eval.parallel_env(
+        bind(make_env, config), envid, args, True, is_eval)
+
+  elif args.script == 'parallel_with_eval_replay':
+    embodied.run.parallel_with_eval.parallel_replay(
+        bind(make_replay, config, 'replay', rate_limit=True),
+        bind(make_replay, config, 'replay_eval', is_eval=True), args)
 
   else:
     raise NotImplementedError(args.script)
@@ -136,7 +162,7 @@ def make_logger(config):
 def make_replay(config, directory=None, is_eval=False, rate_limit=False):
   directory = directory and embodied.Path(config.logdir) / directory
   size = int(config.replay.size / 10 if is_eval else config.replay.size)
-  length = config.batch_length
+  length = config.replay_length_eval if is_eval else config.replay_length
   kwargs = {}
   kwargs['online'] = config.replay.online
   if rate_limit and config.run.train_ratio > 0:
