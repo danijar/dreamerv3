@@ -235,6 +235,7 @@ class SimpleEncoder(nj.Module):
 
   def __init__(self, spaces, **kw):
     assert all(len(s.shape) <= 3 for s in spaces.values()), spaces
+    self.spaces = spaces
     self.veckeys = [k for k, s in spaces.items() if len(s.shape) <= 2]
     self.imgkeys = [k for k, s in spaces.items() if len(s.shape) == 3]
     self.vecinp = Input(self.veckeys, featdims=1)
@@ -245,6 +246,10 @@ class SimpleEncoder(nj.Module):
   def __call__(self, data, bdims=2):
     kw = dict(**self.kw, norm=self.norm, act=self.act)
     outs = []
+
+    shape = data['is_first'].shape[:bdims]
+    data = {k: data[k] for k in self.spaces}
+    data = jaxutils.onehot_dict(data, self.spaces)
 
     if self.veckeys:
       x = self.vecinp(data, bdims, f32)
@@ -268,7 +273,7 @@ class SimpleEncoder(nj.Module):
       outs.append(x)
 
     x = jnp.concatenate(outs, -1)
-    x = x.reshape((*data['is_first'].shape, *x.shape[1:]))
+    x = x.reshape((*shape, *x.shape[1:]))
     return x
 
 

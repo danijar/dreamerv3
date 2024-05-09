@@ -720,11 +720,15 @@ def concat_dict(mapping, batch_shape=None):
   return jnp.concatenate(tensors, -1)
 
 
-def onehot_dict(mapping, spaces):
+def onehot_dict(mapping, spaces, filter=False, limit=256):
   result = {}
   for key, value in mapping.items():
+    if key not in spaces and filter:
+      continue
     space = spaces[key]
-    if space.discrete:
+    if space.discrete and space.dtype != jnp.uint8:
+      if limit:
+        assert space.classes <= limit, (key, space, limit)
       value = jax.nn.one_hot(value, space.classes)
     result[key] = value
   return result
