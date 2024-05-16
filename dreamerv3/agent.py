@@ -172,13 +172,13 @@ class Agent(nj.Module):
     if self.config.replay_context:
       K = self.config.replay_context
       data = data.copy()
-      # context = {k: data.pop(k)[:, :K] for k in self.aux_spaces if k in data}
       context = {
           k: data.pop(k)[:, :K] for k in self.aux_spaces if k != 'stepid'}
       context['stoch'] = f32(jax.nn.one_hot(
           context['stoch'], self.config.dyn.rssm.classes))
       prevlat = self.dyn.outs_to_carry(context)
-      carry = prevlat, carry[1]
+      prevact = {k: data[k][:, K - 1] for k in self.act_space}
+      carry = prevlat, prevact
       data = {k: v[:, K:] for k, v in data.items()}
       stepid = stepid[:, K:]
 
