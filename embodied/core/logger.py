@@ -24,22 +24,15 @@ class Logger:
 
   @timer.section('logger_add')
   def add(self, mapping, prefix=None):
-    mapping = dict(mapping)
-    # print('logger add:', len(mapping))
-    assert len(mapping) <= 1000, list(mapping.keys())
-    for key in mapping.keys():
-      assert len(key) <= 200, (len(key), key[:200] + '...')
+    mapping = {k: (str(v) if isinstance(v, np.ndarray) and np.issubdtype(v.dtype, str) else np.asarray(v))
+               for k, v in mapping.items()}
     step = int(self.step) * self.multiplier
     for name, value in mapping.items():
       name = f'{prefix}/{name}' if prefix else name
-      if isinstance(value, np.ndarray) and np.issubdtype(value.dtype, str):
-        value = str(value)
-      if not isinstance(value, str):
-        value = np.asarray(value)
-        if len(value.shape) not in (0, 1, 2, 3, 4):
-          raise ValueError(
-              f"Shape {value.shape} for name '{name}' cannot be "
-              "interpreted as scalar, vector, image, or video.")
+      if len(value.shape) not in (0, 1, 2, 3, 4):
+        raise ValueError(
+            f"Shape {value.shape} for name '{name}' cannot be "
+            "interpreted as scalar, vector, image, or video.")
       self._metrics.append((step, name, value))
 
   def scalar(self, name, value):
