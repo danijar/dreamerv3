@@ -47,6 +47,7 @@ defaults:
     log_units: seconds # seconds/steps
     log_every: 120
     save_every: 900
+    save_intermediate_ckpt: False
     eval_every: 180
     eval_initial: True
     eval_eps: 1

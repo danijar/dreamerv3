@@ -202,6 +202,9 @@ def parallel_learner(agent, barrier, args):
 
     if should_save():
       checkpoint.save()
+      if args.save_intermediate_ckpt:
+        ckpt_step_path = logdir / f"checkpoint_{logger.step.value}.ckpt"
+        checkpoint.save(ckpt_step_path)
 
 def parallel_replay(make_replay, make_replay_eval, args):
   if isinstance(make_replay, bytes):

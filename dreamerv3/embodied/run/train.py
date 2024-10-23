@@ -6,6 +6,7 @@ import numpy as np
 
 from ... import embodied
 
+
 def train(make_agent, make_replay, make_env, make_logger, args):
 
   agent = make_agent()
@@ -126,5 +127,7 @@ def train(make_agent, make_replay, make_env, make_logger, args):
 
     if should_save(step):
       checkpoint.save()
-
+      if args.save_intermediate_ckpt:
+        ckpt_step_path = logdir / f"checkpoint_{step.value}.ckpt"
+        checkpoint.save(ckpt_step_path)
   logger.close()

@@ -134,5 +134,7 @@ def train_holdout(
 
     if should_save(step):
       checkpoint.save()
-
+      if args.save_intermediate_ckpt:
+        ckpt_step_path = logdir / f"checkpoint_{step.value}.ckpt"
+        checkpoint.save(ckpt_step_path)
   logger.close()

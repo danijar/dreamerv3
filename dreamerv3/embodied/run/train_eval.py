@@ -6,6 +6,7 @@ import numpy as np
 
 from ... import embodied
 
+
 def train_eval(
     make_agent, make_train_replay, make_eval_replay,
     make_train_env, make_eval_env, make_logger, args):
@@ -151,4 +152,6 @@ def train_eval(
 
     if should_save(step):
       checkpoint.save()
+      ckpt_step_path = logdir / f"checkpoint_{step.value}.ckpt"
+      checkpoint.save(ckpt_step_path)
   logger.close()
