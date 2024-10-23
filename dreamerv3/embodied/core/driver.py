@@ -121,6 +121,9 @@ class Driver:
         elif msg == 'act_space':
           assert len(args) == 0
           pipe.send(('result', env.act_space))
+        elif msg == 'info':
+          assert len(args) == 0
+          pipe.send(('result', env.info))
         else:
           raise ValueError(f'Invalid message {msg}')
     except Exception as e:
