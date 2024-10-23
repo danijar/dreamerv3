@@ -51,7 +51,9 @@ def main():
   def make_env(config, env_id=0):
     import crafter
     from embodied.envs import from_gym
+    from gym.wrappers.compatibility import EnvCompatibility
     env = crafter.Env()
+    env = EnvCompatibility(env, render_mode='rgb_array') # Apply EnvCompatibility wrapper because crafter is still at gym==0.19.0 API
     env = from_gym.FromGym(env)
     env = dreamerv3.wrap_env(env, config)
     return env

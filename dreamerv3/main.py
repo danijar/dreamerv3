@@ -190,6 +190,7 @@ def make_env(config, index, **overrides):
   ctor = {
       'dummy': 'dreamerv3.embodied.envs.dummy:Dummy',
       'gym': 'dreamerv3.embodied.envs.from_gym:FromGym',
+      'gymnasium': 'dreamerv3.embodied.envs.from_gymnasium:FromGymnasium',
       'dm': 'dreamerv3.embodied.envs.from_dmenv:FromDM',
       'crafter': 'dreamerv3.embodied.envs.crafter:Crafter',
       'dmc': 'dreamerv3.embodied.envs.dmc:DMC',
@@ -211,7 +212,7 @@ def make_env(config, index, **overrides):
     ctor = getattr(module, cls)
   kwargs = config.env.get(suite, {})
   kwargs.update(overrides)
-  if kwargs.pop('use_seed', False):
+  if kwargs.pop('use_seed', False) or suite == "gymnasium":
     kwargs['seed'] = hash((config.seed, index)) % (2 ** 32 - 1)
   if kwargs.pop('use_logdir', False):
     kwargs['logdir'] = embodied.Path(config.logdir) / f'env{index}'
