@@ -11,7 +11,7 @@ setuptools.setup(
     url='http://github.com/danijar/dreamerv3',
     long_description=pathlib.Path('README.md').read_text(),
     long_description_content_type='text/markdown',
-    packages=find_namespace_packages(exclude=['example.py']),
+    packages=find_namespace_packages(include=["dreamerv3"], exclude=["example.py"]),
     include_package_data=True,
     install_requires=pathlib.Path('requirements.txt').read_text().splitlines(),
     classifiers=[

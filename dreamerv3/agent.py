@@ -1,16 +1,13 @@
 import re
 from functools import partial as bind
 
-import embodied
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
 import ruamel.yaml as yaml
 
-from . import jaxagent
-from . import jaxutils
-from . import nets
+from . import embodied, jaxagent, jaxutils, nets
 from . import ninjax as nj
 
 f32 = jnp.float32

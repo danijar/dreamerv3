@@ -3,12 +3,11 @@ import re
 import threading
 
 import chex
-import embodied
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-from . import jaxutils
+from . import embodied, jaxutils
 from . import ninjax as nj
 
 
@@ -81,11 +80,11 @@ class JAXAgent(embodied.Agent):
     self.policy_params = jax.device_put(
         {k: self.params[k].copy() for k in self.policy_keys},
         self.policy_mirrored)
-
-    self._lower_train()
-    self._lower_report()
-    self._train = self._train.compile()
-    self._report = self._report.compile()
+    if self.jaxcfg.jit:
+      self._lower_train()
+      self._lower_report()
+      self._train = self._train.compile()
+      self._report = self._report.compile()
     self._stack = jax.jit(lambda xs: jax.tree.map(
         jnp.stack, xs, is_leaf=lambda x: isinstance(x, list)))
     self._split = jax.jit(lambda xs: jax.tree.map(

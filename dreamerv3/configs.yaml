@@ -44,8 +44,10 @@ defaults:
     num_envs: 16
     num_envs_eval: 4
     expl_until: 0
+    log_units: seconds # seconds/steps
     log_every: 120
     save_every: 900
+    save_intermediate_ckpt: False
     eval_every: 180
     eval_initial: True
     eval_eps: 1
@@ -84,6 +86,7 @@ defaults:
     dmc: {size: [64, 64], repeat: 2, image: True, camera: -1}
     procgen: {size: [64, 64]}
     loconav: {size: [64, 64], repeat: 2, camera: -1}
+    kwargs: '{}'
 
   # Agent
   report: True

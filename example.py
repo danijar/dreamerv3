@@ -2,7 +2,7 @@ import warnings
 from functools import partial as bind
 
 import dreamerv3
-import embodied
+from dreamerv3 import embodied
 
 warnings.filterwarnings('ignore', '.*truncated to dtype int32.*')
 
@@ -34,7 +34,11 @@ def main():
         embodied.logger.TerminalOutput(config.filter),
         embodied.logger.JSONLOutput(logdir, 'metrics.jsonl'),
         embodied.logger.TensorBoardOutput(logdir),
-        # embodied.logger.WandbOutput(logdir.name, config=config),
+        # embodied.logger.WandBOutput(wandb_init_kwargs={
+        #     'project': 'dreamerv3-compat',
+        #     'name': logdir.name,
+        #     'config': dict(config),
+        # }),
     ])
 
   def make_replay(config):
@@ -47,7 +51,9 @@ def main():
   def make_env(config, env_id=0):
     import crafter
     from embodied.envs import from_gym
+    from gym.wrappers.compatibility import EnvCompatibility
     env = crafter.Env()
+    env = EnvCompatibility(env, render_mode='rgb_array') # Apply EnvCompatibility wrapper because crafter is still at gym==0.19.0 API
     env = from_gym.FromGym(env)
     env = dreamerv3.wrap_env(env, config)
     return env
