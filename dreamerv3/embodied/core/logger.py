@@ -277,10 +277,10 @@ class TensorBoardOutput(AsyncOutput):
 
 class WandBOutput:
 
-  def __init__(self, name, pattern=r'.*', **kwargs):
+  def __init__(self, pattern=r".*", wandb_init_kwargs: dict = {}):
     self._pattern = re.compile(pattern)
     import wandb
-    wandb.init(name=name, **kwargs)
+    wandb.init(**wandb_init_kwargs)
     self._wandb = wandb
 
   def __call__(self, summaries):

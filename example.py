@@ -34,7 +34,11 @@ def main():
         embodied.logger.TerminalOutput(config.filter),
         embodied.logger.JSONLOutput(logdir, 'metrics.jsonl'),
         embodied.logger.TensorBoardOutput(logdir),
-        # embodied.logger.WandbOutput(logdir.name, config=config),
+        # embodied.logger.WandBOutput(wandb_init_kwargs={
+        #     'project': 'dreamerv3-compat',
+        #     'name': logdir.name,
+        #     'config': dict(config),
+        # }),
     ])
 
   def make_replay(config):
