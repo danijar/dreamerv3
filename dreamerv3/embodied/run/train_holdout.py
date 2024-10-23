@@ -120,10 +120,10 @@ def train_holdout(
       logger.add(agg.result())
       logger.add(epstats.result(), prefix='epstats')
       if len(train_replay):
-        mets, _ = agent.report(next(dataset_report), init_report)
+        mets, _ = agent.report(next(dataset_report), carry_report)
         logger.add(mets, prefix='report')
       if len(eval_replay):
-        mets, _ = agent.report(next(dataset_eval), init_report)
+        mets, _ = agent.report(next(dataset_eval), carry_report)
         logger.add(mets, prefix='eval')
       logger.add(embodied.timer.stats(), prefix='timer')
       logger.add(train_replay.stats(), prefix='replay')
