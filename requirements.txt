@@ -1,0 +1,19 @@
+chex
+einops
+jax[cuda12_pip]
+jaxlib
+optax
+tensorflow_probability
+# embodied
+cloudpickle
+colored
+gputil
+msgpack
+numpy
+psutil
+ruamel.yaml<0.18.0
+tensorflow-cpu
+zmq
+# wandb
+# moviepy # Needed for gif/video saving to wandb
+# imageio # Needed for gif/video saving to wandb

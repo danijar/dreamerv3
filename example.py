@@ -2,7 +2,7 @@ import warnings
 from functools import partial as bind
 
 import dreamerv3
-import embodied
+from dreamerv3 import embodied
 
 warnings.filterwarnings('ignore', '.*truncated to dtype int32.*')
 

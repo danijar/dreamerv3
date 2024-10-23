@@ -41,9 +41,9 @@ ENV PATH="/app/venv/bin:$PATH"
 RUN pip install --upgrade pip setuptools
 
 # Envs
-COPY embodied/scripts/install-minecraft.sh .
+COPY scripts/install-minecraft.sh .
 RUN sh install-minecraft.sh
-COPY embodied/scripts/install-dmlab.sh .
+COPY scripts/install-dmlab.sh .
 RUN sh install-dmlab.sh
 RUN pip install ale_py==0.8.1 autorom[accept-rom-license]
 RUN pip install procgen_mirror
@@ -54,14 +54,11 @@ ENV MUJOCO_GL egl
 ENV NUMBA_CACHE_DIR /tmp
 
 # Agent
-COPY dreamerv3/requirements.txt agent-requirements.txt
-RUN pip install -r agent-requirements.txt \
+COPY requirements.txt requirements.txt
+RUN pip install -r requirements.txt \
   -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
 ENV XLA_PYTHON_CLIENT_MEM_FRACTION 0.8
 
-# Embodied
-COPY embodied/requirements.txt embodied-requirements.txt
-RUN pip install -r embodied-requirements.txt
 
 # Source
 COPY . .

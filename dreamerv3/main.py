@@ -1,22 +1,16 @@
 import importlib
 import os
-import pathlib
-import sys
 import warnings
 from functools import partial as bind
-
-directory = pathlib.Path(__file__).resolve().parent
-sys.path.insert(0, str(directory.parent))
-sys.path.insert(0, str(directory.parent.parent))
-__package__ = directory.name
+import ruamel.yaml as yaml
 
 warnings.filterwarnings('ignore', '.*box bound precision lowered.*')
 warnings.filterwarnings('ignore', '.*using stateful random seeds*')
 warnings.filterwarnings('ignore', '.*is a deprecated alias for.*')
 warnings.filterwarnings('ignore', '.*truncated to dtype int32.*')
 
-import embodied
-from embodied import wrappers
+from . import embodied
+from .embodied import wrappers
 
 
 def main(argv=None):
@@ -191,23 +185,23 @@ def make_replay(config, directory=None, is_eval=False, rate_limit=False):
 def make_env(config, index, **overrides):
   suite, task = config.task.split('_', 1)
   if suite == 'memmaze':
-    from embodied.envs import from_gym
     import memory_maze  # noqa
+    from dreamerv3.embodied.envs import from_gym
   ctor = {
-      'dummy': 'embodied.envs.dummy:Dummy',
-      'gym': 'embodied.envs.from_gym:FromGym',
-      'dm': 'embodied.envs.from_dmenv:FromDM',
-      'crafter': 'embodied.envs.crafter:Crafter',
-      'dmc': 'embodied.envs.dmc:DMC',
-      'atari': 'embodied.envs.atari:Atari',
-      'atari100k': 'embodied.envs.atari:Atari',
-      'dmlab': 'embodied.envs.dmlab:DMLab',
-      'minecraft': 'embodied.envs.minecraft:Minecraft',
-      'loconav': 'embodied.envs.loconav:LocoNav',
-      'pinpad': 'embodied.envs.pinpad:PinPad',
-      'langroom': 'embodied.envs.langroom:LangRoom',
-      'procgen': 'embodied.envs.procgen:ProcGen',
-      'bsuite': 'embodied.envs.bsuite:BSuite',
+      'dummy': 'dreamerv3.embodied.envs.dummy:Dummy',
+      'gym': 'dreamerv3.embodied.envs.from_gym:FromGym',
+      'dm': 'dreamerv3.embodied.envs.from_dmenv:FromDM',
+      'crafter': 'dreamerv3.embodied.envs.crafter:Crafter',
+      'dmc': 'dreamerv3.embodied.envs.dmc:DMC',
+      'atari': 'dreamerv3.embodied.envs.atari:Atari',
+      'atari100k': 'dreamerv3.embodied.envs.atari:Atari',
+      'dmlab': 'dreamerv3.embodied.envs.dmlab:DMLab',
+      'minecraft': 'dreamerv3.embodied.envs.minecraft:Minecraft',
+      'loconav': 'dreamerv3.embodied.envs.loconav:LocoNav',
+      'pinpad': 'dreamerv3.embodied.envs.pinpad:PinPad',
+      'langroom': 'dreamerv3.embodied.envs.langroom:LangRoom',
+      'procgen': 'dreamerv3.embodied.envs.procgen:ProcGen',
+      'bsuite': 'dreamerv3.embodied.envs.bsuite:BSuite',
       'memmaze': lambda task, **kw: from_gym.FromGym(
           f'MemoryMaze-{task}-ExtraObs-v0', **kw),
   }[suite]
