@@ -108,6 +108,7 @@ def parallel_learner(agent, barrier, args):
   logdir = embodied.Path(args.logdir)
   agg = embodied.Agg()
   usage = embodied.Usage(**args.usage)
+  assert args.log_units == "seconds", args.log_units
   should_log = embodied.when.Clock(args.log_every)
   should_eval = embodied.when.Clock(args.eval_every)
   should_save = embodied.when.Clock(args.save_every)

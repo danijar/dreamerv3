@@ -44,6 +44,7 @@ defaults:
     num_envs: 16
     num_envs_eval: 4
     expl_until: 0
+    log_units: seconds # seconds/steps
     log_every: 120
     save_every: 900
     eval_every: 180

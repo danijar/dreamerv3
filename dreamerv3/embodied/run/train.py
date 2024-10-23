@@ -26,9 +26,11 @@ def train(make_agent, make_replay, make_env, make_logger, args):
   batch_steps = args.batch_size * (args.batch_length - args.replay_context)
   should_expl = embodied.when.Until(args.expl_until)
   should_train = embodied.when.Ratio(args.train_ratio / batch_steps)
-  should_log = embodied.when.Clock(args.log_every)
-  should_eval = embodied.when.Clock(args.eval_every)
-  should_save = embodied.when.Clock(args.save_every)
+  log_when_klass = embodied.when.Clock if args.log_units == "seconds" else embodied.when.Every
+
+  should_log = log_when_klass(args.log_every)
+  should_eval = log_when_klass(args.eval_every)
+  should_save = log_when_klass(args.save_every)
 
   @embodied.timer.section('log_step')
   def log_step(tran, worker):

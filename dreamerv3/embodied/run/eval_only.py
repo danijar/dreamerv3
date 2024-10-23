@@ -20,7 +20,8 @@ def eval_only(make_agent, make_env, make_logger, args):
   agg = embodied.Agg()
   epstats = embodied.Agg()
   episodes = defaultdict(embodied.Agg)
-  should_log = embodied.when.Clock(args.log_every)
+  should_log_klass = embodied.when.Clock if args.log_units == "seconds" else embodied.when.Every
+  should_log = should_log_klass(args.log_every)
   policy_fps = embodied.FPS()
 
   @embodied.timer.section('log_step')
