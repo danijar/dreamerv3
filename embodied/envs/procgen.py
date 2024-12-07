@@ -1,12 +1,15 @@
+import elements
 import embodied
 import numpy as np
+import procgen  # noqa
+
+from PIL import Image
 
 
 class ProcGen(embodied.Env):
 
   def __init__(self, task, size=(64, 64), resize='pillow', **kwargs):
     assert resize in ('opencv', 'pillow'), resize
-    import procgen  # noqa
     from . import from_gym
     self.size = size
     self.resize = resize
@@ -14,7 +17,6 @@ class ProcGen(embodied.Env):
       self.source = 'step'
     else:
       self.source = 'info'
-
     if self.source == 'info':
       kwargs['render_mode'] = 'rgb_array'
     try:
@@ -29,8 +31,7 @@ class ProcGen(embodied.Env):
   @property
   def obs_space(self):
     spaces = self.env.obs_space.copy()
-    if self.source != 'step':
-      spaces['image'] = embodied.Space(np.uint8, (*self.size, 3))
+    spaces['image'] = elements.Space(np.uint8, (*self.size, 3))
     return spaces
 
   @property
@@ -45,6 +46,9 @@ class ProcGen(embodied.Env):
       info = self.inner.get_info()
       assert len(info) == 1
       obs['image'] = self._resize(info[0]['rgb'], self.size, self.resize)
+    elif self.source == 'render':
+      obs['image'] = self._resize(
+          self.env.env.render(mode='rgb_array'), self.size, self.resize)
     else:
       raise NotImplementedError(self.source)
     return obs
@@ -55,7 +59,6 @@ class ProcGen(embodied.Env):
       image = cv2.resize(image, size, interpolation=cv2.INTER_AREA)
       return image
     elif method == 'pillow':
-      from PIL import Image
       image = Image.fromarray(image)
       image = image.resize((size[1], size[0]), Image.BILINEAR)
       image = np.array(image)

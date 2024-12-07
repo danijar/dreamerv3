@@ -1,9 +1,9 @@
 import time
 
 import cloudpickle
+import elements
 import numpy as np
-
-from .. import distr
+import portal
 
 
 class Driver:
@@ -19,7 +19,7 @@ class Driver:
       self.pipes, pipes = zip(*[context.Pipe() for _ in range(self.length)])
       fns = [cloudpickle.dumps(fn) for fn in make_env_fns]
       self.procs = [
-          distr.StoppableProcess(self._env_server, i, pipe, fn, start=True)
+          portal.Process(self._env_server, i, pipe, fn, start=True)
           for i, (fn, pipe) in enumerate(zip(fns, pipes))]
       self.pipes[0].send(('act_space',))
       self.act_space = self._receive(self.pipes[0])
@@ -40,7 +40,7 @@ class Driver:
 
   def close(self):
     if self.parallel:
-      [proc.stop() for proc in self.procs]
+      [proc.kill() for proc in self.procs]
     else:
       [env.close() for env in self.envs]
 
@@ -63,18 +63,19 @@ class Driver:
     else:
       obs = [env.step(act) for env, act in zip(self.envs, acts)]
     obs = {k: np.stack([x[k] for x in obs]) for k in obs[0].keys()}
+    logs = {k: v for k, v in obs.items() if k.startswith('log/')}
+    obs = {k: v for k, v in obs.items() if not k.startswith('log/')}
     assert all(len(x) == self.length for x in obs.values()), obs
-    acts, outs, self.carry = policy(obs, self.carry, **self.kwargs)
+    self.carry, acts, outs = policy(self.carry, obs, **self.kwargs)
     assert all(k not in acts for k in outs), (
         list(outs.keys()), list(acts.keys()))
     if obs['is_last'].any():
       mask = ~obs['is_last']
       acts = {k: self._mask(v, mask) for k, v in acts.items()}
-    acts['reset'] = obs['is_last'].copy()
-    self.acts = acts
-    trans = {**obs, **acts, **outs}
+    self.acts = {**acts, 'reset': obs['is_last'].copy()}
+    trans = {**obs, **acts, **outs, **logs}
     for i in range(self.length):
-      trn = {k: v[i] for k, v in trans.items()}
+      trn = elements.tree.map(lambda x: x[i], trans)
       [fn(trn, i, **self.kwargs) for fn in self.callbacks]
     step += len(obs['is_first'])
     episode += obs['is_last'].sum()
@@ -123,10 +124,14 @@ class Driver:
           pipe.send(('result', env.act_space))
         else:
           raise ValueError(f'Invalid message {msg}')
+    except ConnectionResetError:
+      print('Connection to driver lost')
     except Exception as e:
-      distr.warn_remote_error(e, f'Env{envid}')
       pipe.send(('error', e))
+      raise
     finally:
-      print(f'Closing env {envid}')
-      env.close()
+      try:
+        env.close()
+      except Exception:
+        pass
       pipe.close()

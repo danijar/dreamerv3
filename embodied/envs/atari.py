@@ -1,9 +1,14 @@
 import os
 import threading
-from collections import deque
+import collections
 
+import ale_py
+import ale_py.roms as roms
+import elements
 import embodied
 import numpy as np
+
+from PIL import Image
 
 
 class Atari(embodied.Env):
@@ -19,8 +24,6 @@ class Atari(embodied.Env):
       self, name, repeat=4, size=(84, 84), gray=True, noops=0, lives='unused',
       sticky=True, actions='all', length=108000, pooling=2, aggregate='max',
       resize='pillow', autostart=False, clip_reward=False, seed=None):
-    import ale_py
-    import ale_py.roms as roms
 
     assert lives in ('unused', 'discount', 'reset'), lives
     assert actions in ('all', 'needed'), actions
@@ -53,8 +56,7 @@ class Atari(embodied.Env):
       if path:
         self.ale.loadROM(os.path.join(path, f'{name}.bin'))
       else:
-        import ale_py.roms.utils as rom_utils
-        self.ale.loadROM(getattr(roms, rom_utils.rom_id_to_name(name)))
+        self.ale.loadROM(roms.get_rom_path(name))
 
     self.ale.setFloat('repeat_action_probability', 0.25 if sticky else 0.0)
     self.actionset = {
@@ -63,7 +65,7 @@ class Atari(embodied.Env):
     }[actions]()
 
     W, H = self.ale.getScreenDims()
-    self.buffers = deque(
+    self.buffers = collections.deque(
         [np.zeros((W, H, 3), np.uint8) for _ in range(self.pooling)],
         maxlen=self.pooling)
     self.prevlives = None
@@ -73,18 +75,18 @@ class Atari(embodied.Env):
   @property
   def obs_space(self):
     return {
-        'image': embodied.Space(np.uint8, (*self.size, 1 if self.gray else 3)),
-        'reward': embodied.Space(np.float32),
-        'is_first': embodied.Space(bool),
-        'is_last': embodied.Space(bool),
-        'is_terminal': embodied.Space(bool),
+        'image': elements.Space(np.uint8, (*self.size, 1 if self.gray else 3)),
+        'reward': elements.Space(np.float32),
+        'is_first': elements.Space(bool),
+        'is_last': elements.Space(bool),
+        'is_terminal': elements.Space(bool),
     }
 
   @property
   def act_space(self):
     return {
-        'action': embodied.Space(np.int32, (), 0, len(self.actionset)),
-        'reset': embodied.Space(bool),
+        'action': elements.Space(np.int32, (), 0, len(self.actionset)),
+        'reset': elements.Space(bool),
     }
 
   def step(self, action):
@@ -159,11 +161,12 @@ class Atari(embodied.Env):
       import cv2
       image = cv2.resize(image, self.size, interpolation=cv2.INTER_AREA)
     elif self.resize == 'pillow':
-      from PIL import Image
       image = Image.fromarray(image)
       image = image.resize(self.size, Image.BILINEAR)
       image = np.array(image)
     if self.gray:
+      # Averaging channels equally would not work. For example, a fully red
+      # object on a fully green background would average to the same color.
       image = (image * self.WEIGHTS).sum(-1).astype(image.dtype)[:, :, None]
     return dict(
         image=image,

@@ -1,5 +1,6 @@
 import collections
 
+import elements
 import embodied
 import numpy as np
 
@@ -47,18 +48,18 @@ class PinPad(embodied.Env):
   @property
   def act_space(self):
     return {
-        'action': embodied.Space(np.int32, (), 0, 5),
-        'reset': embodied.Space(bool),
+        'action': elements.Space(np.int32, (), 0, 5),
+        'reset': elements.Space(bool),
     }
 
   @property
   def obs_space(self):
     return {
-        'image': embodied.Space(np.uint8, (64, 64, 3)),
-        'reward': embodied.Space(np.float32),
-        'is_first': embodied.Space(bool),
-        'is_last': embodied.Space(bool),
-        'is_terminal': embodied.Space(bool),
+        'image': elements.Space(np.uint8, (64, 64, 3)),
+        'reward': elements.Space(np.float32),
+        'is_first': elements.Space(bool),
+        'is_last': elements.Space(bool),
+        'is_terminal': elements.Space(bool),
     }
 
   def step(self, action):
@@ -91,7 +92,16 @@ class PinPad(embodied.Env):
     self.done = self.done or (self.steps >= self.length)
     return self._obs(reward=reward, is_last=self.done)
 
-  def render(self):
+  def _obs(self, reward, is_first=False, is_last=False, is_terminal=False):
+    return dict(
+        image=self._render(),
+        reward=np.float32(reward),
+        is_first=is_first,
+        is_last=is_last,
+        is_terminal=is_terminal,
+    )
+
+  def _render(self):
     grid = np.zeros((16, 16, 3), np.uint8) + 255
     white = np.array([255, 255, 255])
     if self.countdown:
@@ -110,15 +120,6 @@ class PinPad(embodied.Env):
       grid[2 * i + 1, -2] = self.COLORS[char]
     image = np.repeat(np.repeat(grid, 4, 0), 4, 1)
     return image.transpose((1, 0, 2))
-
-  def _obs(self, reward, is_first=False, is_last=False, is_terminal=False):
-    return dict(
-        image=self.render(),
-        reward=np.float32(reward),
-        is_first=is_first,
-        is_last=is_last,
-        is_terminal=is_terminal,
-    )
 
 
 LAYOUT_THREE = """

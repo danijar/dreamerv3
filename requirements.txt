@@ -1,0 +1,17 @@
+av
+chex
+colored_traceback
+einops
+elements>=3.17.0
+google-resumable-media>=2.7.2
+granular>=0.20.3
+ipdb
+jax[cuda12]==0.4.33
+jaxtyping
+ninjax>=3.5.1
+numpy<2  # DMLab: <2, MineRLv1.0: <1.24
+nvidia-cuda-nvcc-cu12<=12.2
+optax
+portal>=3.5.0
+scope>=0.4.4
+tqdm

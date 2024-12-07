@@ -60,18 +60,10 @@ follow the manual instructions below.
 Install [JAX][jax] and then the other dependencies:
 
 ```sh
-pip install -U -r embodied/requirements.txt
-pip install -U -r dreamerv3/requirements.txt \
-  -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
+pip install -U -r requirements.txt
 ```
 
-Simple training script:
-
-```sh
-python example.py
-```
-
-Flexible training script:
+Training script:
 
 ```sh
 python dreamerv3/main.py \
@@ -85,8 +77,8 @@ such as `--configs atari --task atari_pong`.
 
 # Tips
 
-- All config options are listed in `configs.yaml` and you can override them
-  as flags from the command line.
+- All config options are listed in `dreamerv3/configs.yaml` and you can
+  override them as flags from the command line.
 - The `debug` config block reduces the network size, batch size, duration
   between logs, and so on for fast debugging (but does not learn a good model).
 - By default, the code tries to run on GPU. You can switch to CPU or TPU using
@@ -94,8 +86,8 @@ such as `--configs atari --task atari_pong`.
 - You can use multiple config blocks that will override defaults in the
   order they are specified, for example `--configs crafter size50m`.
 - By default, metrics are printed to the terminal, appended to a JSON lines
-  file, and written as TensorBoard summaries. Other outputs like WandB can be
-  enabled in the training script.
+  file, and written as Scope summaries. Other outputs like WandB and
+  TensorBoard can be enabled in the training script.
 - If you get a `Too many leaves for PyTreeDef` error, it means you're
   reloading a checkpoint that is not compatible with the current config. This
   often happens when reusing an old logdir by accident.
@@ -104,12 +96,6 @@ such as `--configs atari --task atari_pong`.
   CUDA versions. Try `--batch_size 1` to rule out an out of memory error.
 - Many environments are included, some of which require installing additional
   packages. See the `Dockerfile` for reference.
-- When running on custom environments, make sure to specify the observation
-  keys the agent should be using via the `enc.spaces` and `dec.spaces` regex
-  patterns.
-- To log metrics from environments without showing them to the agent or storing
-  them in the replay buffer, return them as observation keys with `log_` prefix
-  and enable logging via the `run.log_keys_...` options.
 - To continue stopped training runs, simply run the same command line again and
   make sure that the `--logdir` points to the same directory.
 
@@ -124,4 +110,3 @@ environments.
 [paper]: https://arxiv.org/pdf/2301.04104v1.pdf
 [website]: https://danijar.com/dreamerv3
 [tweet]: https://twitter.com/danijarh/status/1613161946223677441
-[example]: https://github.com/danijar/dreamerv3/blob/main/example.py

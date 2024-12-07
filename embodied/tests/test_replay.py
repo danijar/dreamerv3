@@ -1,11 +1,8 @@
 import collections
-import pathlib
-import sys
 import threading
 import time
 
-sys.path.append(str(pathlib.Path(__file__).parent.parent.parent))
-
+import elements
 import embodied
 import numpy as np
 import pytest
@@ -142,7 +139,6 @@ class TestReplay:
       'length,workers,capacity',
       [(1, 1, 1), (2, 1, 2), (5, 1, 10), (1, 2, 2), (5, 3, 15), (2, 7, 20)])
   def test_worker_delay(self, Replay, length, workers, capacity):
-    # embodied.uuid.reset(debug=True)
     replay = Replay(length, capacity)
     rng = np.random.default_rng(seed=0)
     streams = [iter(range(10)) for _ in range(workers)]
@@ -158,7 +154,7 @@ class TestReplay:
       'length,capacity,chunksize',
       [(1, 1, 128), (3, 10, 128), (5, 100, 128), (5, 25, 2)])
   def test_restore_exact(self, tmpdir, Replay, length, capacity, chunksize):
-    embodied.uuid.reset(debug=True)
+    elements.UUID.reset(debug=True)
     replay = Replay(
         length, capacity, directory=tmpdir, chunksize=chunksize,
         save_wait=True)
@@ -179,7 +175,7 @@ class TestReplay:
       'length,capacity,chunksize',
       [(1, 1, 128), (3, 10, 128), (5, 100, 128), (5, 25, 2)])
   def test_restore_noclear(self, tmpdir, Replay, length, capacity, chunksize):
-    embodied.uuid.reset(debug=True)
+    elements.UUID.reset(debug=True)
     replay = Replay(
         length, capacity, directory=tmpdir, chunksize=chunksize,
         save_wait=True)
@@ -221,8 +217,8 @@ class TestReplay:
       'length,capacity,chunksize', [(1, 1, 1), (3, 10, 5), (5, 100, 12)])
   def test_restore_chunks_exact(
       self, tmpdir, Replay, length, capacity, chunksize):
-    embodied.uuid.reset(debug=True)
-    assert len(list(embodied.Path(tmpdir).glob('*.npz'))) == 0
+    elements.UUID.reset(debug=True)
+    assert len(list(elements.Path(tmpdir).glob('*.npz'))) == 0
     replay = Replay(
         length, capacity, directory=tmpdir, chunksize=chunksize,
         save_wait=True)
@@ -231,7 +227,7 @@ class TestReplay:
     num_items = np.clip(30 - length + 1, 0, capacity)
     assert len(replay) == num_items
     data = replay.save()
-    filenames = list(embodied.Path(tmpdir).glob('*.npz'))
+    filenames = list(elements.Path(tmpdir).glob('*.npz'))
     lengths = [int(x.stem.split('-')[3]) for x in filenames]
     stored_steps = min(capacity + length - 1, 30)
     total_chunks = int(np.ceil(30 / chunksize))
@@ -243,7 +239,7 @@ class TestReplay:
     assert all(1 <= x <= chunksize for x in lengths)
     replay = Replay(length, capacity, directory=tmpdir, chunksize=chunksize)
     replay.load(data)
-    assert sorted(embodied.Path(tmpdir).glob('*.npz')) == sorted(filenames)
+    assert sorted(elements.Path(tmpdir).glob('*.npz')) == sorted(filenames)
     assert len(replay) == num_items
     dataset = unbatched(replay.dataset(1))
     for _ in range(len(replay)):
@@ -265,7 +261,7 @@ class TestReplay:
     num_items = np.clip((50 - length + 1) * workers, 0, capacity)
     assert len(replay) == num_items
     data = replay.save()
-    filenames = list(embodied.Path(tmpdir).glob('*.npz'))
+    filenames = list(elements.Path(tmpdir).glob('*.npz'))
     lengths = [int(x.stem.split('-')[3]) for x in filenames]
     stored_steps = min(capacity // workers + length - 1, 50)
     total_chunks = int(np.ceil(50 / chunksize))
@@ -286,7 +282,7 @@ class TestReplay:
       'length,capacity,chunksize',
       [(1, 1, 128), (3, 10, 128), (5, 100, 128), (5, 25, 2)])
   def test_restore_insert(self, tmpdir, Replay, length, capacity, chunksize):
-    embodied.uuid.reset(debug=True)
+    elements.UUID.reset(debug=True)
     replay = Replay(
         length, capacity, directory=tmpdir, chunksize=chunksize,
         save_wait=True)
@@ -311,7 +307,7 @@ class TestReplay:
   def test_threading(
       self, tmpdir, Replay, length=5, capacity=128, chunksize=32,
       adders=8, samplers=4):
-    embodied.uuid.reset(debug=True)
+    elements.UUID.reset(debug=True)
     replay = Replay(
         length, capacity, directory=tmpdir, chunksize=chunksize,
         save_wait=True)

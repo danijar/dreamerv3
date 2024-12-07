@@ -1,5 +1,7 @@
 import json
 
+import crafter
+import elements
 import embodied
 import numpy as np
 
@@ -8,10 +10,9 @@ class Crafter(embodied.Env):
 
   def __init__(self, task, size=(64, 64), logs=False, logdir=None, seed=None):
     assert task in ('reward', 'noreward')
-    import crafter
     self._env = crafter.Env(size=size, reward=(task == 'reward'), seed=seed)
     self._logs = logs
-    self._logdir = logdir and embodied.Path(logdir)
+    self._logdir = logdir and elements.Path(logdir)
     self._logdir and self._logdir.mkdir()
     self._episode = 0
     self._length = None
@@ -22,24 +23,24 @@ class Crafter(embodied.Env):
   @property
   def obs_space(self):
     spaces = {
-        'image': embodied.Space(np.uint8, self._env.observation_space.shape),
-        'reward': embodied.Space(np.float32),
-        'is_first': embodied.Space(bool),
-        'is_last': embodied.Space(bool),
-        'is_terminal': embodied.Space(bool),
-        'log_reward': embodied.Space(np.float32),
+        'image': elements.Space(np.uint8, self._env.observation_space.shape),
+        'reward': elements.Space(np.float32),
+        'is_first': elements.Space(bool),
+        'is_last': elements.Space(bool),
+        'is_terminal': elements.Space(bool),
+        'log/reward': elements.Space(np.float32),
     }
     if self._logs:
       spaces.update({
-          f'log_achievement_{k}': embodied.Space(np.int32)
+          f'log/achievement_{k}': elements.Space(np.int32)
           for k in self._achievements})
     return spaces
 
   @property
   def act_space(self):
     return {
-        'action': embodied.Space(np.int32, (), 0, self._env.action_space.n),
-        'reset': embodied.Space(bool),
+        'action': elements.Space(np.int32, (), 0, self._env.action_space.n),
+        'reset': elements.Space(bool),
     }
 
   def step(self, action):
@@ -69,11 +70,11 @@ class Crafter(embodied.Env):
         is_first=is_first,
         is_last=is_last,
         is_terminal=is_terminal,
-        log_reward=np.float32(info['reward'] if info else 0.0),
+        **{'log/reward': np.float32(info['reward'] if info else 0.0)},
     )
     if self._logs:
       log_achievements = {
-          f'log_achievement_{k}': info['achievements'][k] if info else 0
+          f'log/achievement_{k}': info['achievements'][k] if info else 0
           for k in self._achievements}
       obs.update({k: np.int32(v) for k, v in log_achievements.items()})
     return obs
@@ -88,8 +89,5 @@ class Crafter(embodied.Env):
     filename = self._logdir / 'stats.jsonl'
     lines = filename.read() if filename.exists() else ''
     lines += json.dumps(stats) + '\n'
-    filename.write(lines)
+    filename.write(lines, mode='w')
     print(f'Wrote stats: {filename}')
-
-  def render(self):
-    return self._env.render()

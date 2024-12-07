@@ -2,6 +2,8 @@ import functools
 import re
 import zlib
 
+import deepmind_lab
+import elements
 import embodied
 import numpy as np
 
@@ -13,11 +15,8 @@ class DMLab(embodied.Env):
   def __init__(
       self, level, repeat=4, size=(64, 64), mode='train',
       actions='popart', episodic=True, text=None, seed=None):
-    import deepmind_lab
-    cache = None
-    # path = os.environ.get('DMLAB_CACHE', None)
-    # if path:
-    #   cache = Cache(path)
+    if level == 'goals':  # Shortcut for convenience
+      level = 'dmlab_explore_goal_locations_small'
     self._size = size
     self._repeat = repeat
     self._actions = {
@@ -41,7 +40,7 @@ class DMLab(embodied.Env):
     obs = ['RGB_INTERLEAVED', 'INSTR'] if text else ['RGB_INTERLEAVED']
     self._env = deepmind_lab.Lab(
         level='contributed/dmlab30/' + level,
-        observations=obs, level_cache=cache, config=config)
+        observations=obs, config=config)
     self._current_image = None
     if self._text:
       self._current_instr = None
@@ -55,22 +54,22 @@ class DMLab(embodied.Env):
   @property
   def obs_space(self):
     spaces = {
-        'image': embodied.Space(np.uint8, self._size + (3,)),
-        'reward': embodied.Space(np.float32),
-        'is_first': embodied.Space(bool),
-        'is_last': embodied.Space(bool),
-        'is_terminal': embodied.Space(bool),
+        'image': elements.Space(np.uint8, self._size + (3,)),
+        'reward': elements.Space(np.float32),
+        'is_first': elements.Space(bool),
+        'is_last': elements.Space(bool),
+        'is_terminal': elements.Space(bool),
     }
     if self._text:
-      spaces['instr'] = embodied.Space(
+      spaces['instr'] = elements.Space(
           np.float32, self._instr_length * self._embed_size)
     return spaces
 
   @property
   def act_space(self):
     return {
-        'action': embodied.Space(np.int32, (), 0, len(self._actions)),
-        'reset': embodied.Space(bool),
+        'action': elements.Space(np.int32, (), 0, len(self._actions)),
+        'reset': elements.Space(bool),
     }
 
   def step(self, action):
@@ -113,42 +112,6 @@ class DMLab(embodied.Env):
 
   def close(self):
     self._env.close()
-
-
-class Cache:
-
-  def __init__(self, cache_dir):
-    self._cache_dir = cache_dir
-    import tensorflow as tf
-    tf.config.set_visible_devices([], 'GPU')
-    tf.config.set_visible_devices([], 'TPU')
-
-  def get_path(self, key):
-    import hashlib
-    import os
-    key = hashlib.md5(key.encode('utf-8')).hexdigest()
-    dir_, filename = key[:3], key[3:]
-    return os.path.join(self._cache_dir, dir_, filename)
-
-  def fetch(self, key, pk3_path):
-    import tensorflow as tf
-    path = self.get_path(key)
-    try:
-      tf.io.gfile.copy(path, pk3_path, overwrite=True)
-      return True
-    except tf.errors.OpError:
-      return False
-
-  def write(self, key, pk3_path):
-    import os
-    import tensorflow as tf
-    path = self.get_path(key)
-    try:
-      if not tf.io.gfile.exists(path):
-        tf.io.gfile.makedirs(os.path.dirname(path))
-        tf.io.gfile.copy(pk3_path, path)
-    except Exception as e:
-      print(f'Could to store level: {e}')
 
 
 # Small action set used by IMPALA.

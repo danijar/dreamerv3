@@ -1,65 +1,62 @@
-import re
-from collections import defaultdict
+import pickle
+import collections
 from functools import partial as bind
 
+import elements
 import embodied
 import numpy as np
 
 
 def train_eval(
-    make_agent, make_train_replay, make_eval_replay,
-    make_train_env, make_eval_env, make_logger, args):
+    make_agent,
+    make_replay_train,
+    make_replay_eval,
+    make_env_train,
+    make_env_eval,
+    make_stream,
+    make_logger,
+    args):
 
   agent = make_agent()
-  train_replay = make_train_replay()
-  eval_replay = make_eval_replay()
+  replay_train = make_replay_train()
+  replay_eval = make_replay_eval()
   logger = make_logger()
 
-  logdir = embodied.Path(args.logdir)
+  logdir = elements.Path(args.logdir)
   logdir.mkdir()
   print('Logdir', logdir)
   step = logger.step
-  usage = embodied.Usage(**args.usage)
-  agg = embodied.Agg()
-  train_episodes = defaultdict(embodied.Agg)
-  train_epstats = embodied.Agg()
-  eval_episodes = defaultdict(embodied.Agg)
-  eval_epstats = embodied.Agg()
-  policy_fps = embodied.FPS()
-  train_fps = embodied.FPS()
+  usage = elements.Usage(**args.usage)
+  agg = elements.Agg()
+  train_episodes = collections.defaultdict(elements.Agg)
+  train_epstats = elements.Agg()
+  eval_episodes = collections.defaultdict(elements.Agg)
+  eval_epstats = elements.Agg()
+  policy_fps = elements.FPS()
+  train_fps = elements.FPS()
 
-  batch_steps = args.batch_size * (args.batch_length - args.replay_context)
-  should_expl = embodied.when.Until(args.expl_until)
-  should_train = embodied.when.Ratio(args.train_ratio / batch_steps)
-  should_log = embodied.when.Clock(args.log_every)
-  should_save = embodied.when.Clock(args.save_every)
-  should_eval = embodied.when.Clock(args.eval_every)
+  batch_steps = args.batch_size * args.batch_length
+  should_train = elements.when.Ratio(args.train_ratio / batch_steps)
+  should_log = elements.when.Clock(args.log_every)
+  should_report = elements.when.Clock(args.report_every)
+  should_save = elements.when.Clock(args.save_every)
 
-  @embodied.timer.section('log_step')
-  def log_step(tran, worker, mode):
+  @elements.timer.section('logfn')
+  def logfn(tran, worker, mode):
     episodes = dict(train=train_episodes, eval=eval_episodes)[mode]
     epstats = dict(train=train_epstats, eval=eval_epstats)[mode]
-
     episode = episodes[worker]
+    tran['is_first'] and episode.reset()
     episode.add('score', tran['reward'], agg='sum')
     episode.add('length', 1, agg='sum')
     episode.add('rewards', tran['reward'], agg='stack')
-
-    if tran['is_first']:
-      episode.reset()
-
-    if worker < args.log_video_streams:
-      for key in args.log_keys_video:
-        if key in tran:
-          episode.add(f'policy_{key}', tran[key], agg='stack')
     for key, value in tran.items():
-      if re.match(args.log_keys_sum, key):
-        episode.add(key, value, agg='sum')
-      if re.match(args.log_keys_avg, key):
-        episode.add(key, value, agg='avg')
-      if re.match(args.log_keys_max, key):
-        episode.add(key, value, agg='max')
-
+      if value.dtype == np.uint8 and value.ndim == 3:
+        if worker == 0:
+          episode.add(f'policy_{key}', value, agg='stack')
+      elif key.startswith('log/'):
+        assert value.ndim == 0, (key, value.shape, value.dtype)
+        episode.add(key, value, agg=('avg', 'max', 'sum'))
     if tran['is_last']:
       result = episode.result()
       logger.add({
@@ -71,83 +68,90 @@ def train_eval(
         result['reward_rate'] = (np.abs(rew[1:] - rew[:-1]) >= 0.01).mean()
       epstats.add(result)
 
-  fns = [bind(make_train_env, i) for i in range(args.num_envs)]
-  train_driver = embodied.Driver(fns, args.driver_parallel)
-  train_driver.on_step(lambda tran, _: step.increment())
-  train_driver.on_step(lambda tran, _: policy_fps.step())
-  train_driver.on_step(train_replay.add)
-  train_driver.on_step(bind(log_step, mode='train'))
+  fns = [bind(make_env_train, i) for i in range(args.envs)]
+  driver_train = embodied.Driver(fns, parallel=(not args.debug))
+  driver_train.on_step(lambda tran, _: step.increment())
+  driver_train.on_step(lambda tran, _: policy_fps.step())
+  driver_train.on_step(replay_train.add)
+  driver_train.on_step(bind(logfn, mode='train'))
 
-  fns = [bind(make_eval_env, i) for i in range(args.num_envs)]
-  eval_driver = embodied.Driver(fns, args.driver_parallel)
-  eval_driver.on_step(eval_replay.add)
-  eval_driver.on_step(bind(log_step, mode='eval'))
-  eval_driver.on_step(lambda tran, _: policy_fps.step())
+  fns = [bind(make_env_eval, i) for i in range(args.eval_envs)]
+  driver_eval = embodied.Driver(fns, parallel=(not args.debug))
+  driver_eval.on_step(replay_eval.add)
+  driver_eval.on_step(bind(logfn, mode='eval'))
+  driver_eval.on_step(lambda tran, _: policy_fps.step())
 
-  dataset_train = agent.dataset(
-      bind(train_replay.dataset, args.batch_size, args.batch_length))
-  dataset_report = agent.dataset(
-      bind(train_replay.dataset, args.batch_size, args.batch_length_eval))
-  dataset_eval = agent.dataset(
-      bind(eval_replay.dataset, args.batch_size, args.batch_length_eval))
-  carry = [agent.init_train(args.batch_size)]
+  stream_train = iter(agent.stream(make_stream(replay_train, 'train')))
+  stream_report = iter(agent.stream(make_stream(replay_train, 'report')))
+  stream_eval = iter(agent.stream(make_stream(replay_eval, 'eval')))
+
+  carry_train = [agent.init_train(args.batch_size)]
   carry_report = agent.init_report(args.batch_size)
+  carry_eval = agent.init_report(args.batch_size)
 
-  def train_step(tran, worker):
-    if len(train_replay) < args.batch_size or step < args.train_fill:
+  def trainfn(tran, worker):
+    if len(replay_train) < args.batch_size * args.batch_length:
       return
     for _ in range(should_train(step)):
-      with embodied.timer.section('dataset_next'):
-        batch = next(dataset_train)
-      outs, carry[0], mets = agent.train(batch, carry[0])
+      with elements.timer.section('stream_next'):
+        batch = next(stream_train)
+      carry_train[0], outs, mets = agent.train(carry_train[0], batch)
       train_fps.step(batch_steps)
       if 'replay' in outs:
-        train_replay.update(outs['replay'])
+        replay_train.update(outs['replay'])
       agg.add(mets, prefix='train')
-  train_driver.on_step(train_step)
+  driver_train.on_step(trainfn)
 
-  checkpoint = embodied.Checkpoint(logdir / 'checkpoint.ckpt')
-  checkpoint.step = step
-  checkpoint.agent = agent
-  checkpoint.train_replay = train_replay
-  checkpoint.eval_replay = eval_replay
+  def reportfn(carry, stream):
+    agg = elements.Agg()
+    for _ in range(args.report_batches):
+      batch = next(stream)
+      carry, mets = agent.report(carry, batch)
+      agg.add(mets)
+    return carry, agg.result()
+
+  cp = elements.Checkpoint(logdir / 'checkpoint.pkl')
+  cp.step = step
+  cp.agent = agent
+  cp.replay_train = replay_train
+  cp.replay_eval = replay_eval
   if args.from_checkpoint:
-    checkpoint.load(args.from_checkpoint)
-  checkpoint.load_or_save()
+    data = pickle.loads(elements.Path(args.from_checkpoint).read_bytes())
+    agent.load(data['model'], regex=args.from_checkpoint_regex)
+  cp.load_or_save()
   should_save(step)  # Register that we just saved.
 
   print('Start training loop')
-  train_policy = lambda *args: agent.policy(
-      *args, mode='explore' if should_expl(step) else 'train')
+  train_policy = lambda *args: agent.policy(*args, mode='train')
   eval_policy = lambda *args: agent.policy(*args, mode='eval')
-  train_driver.reset(agent.init_policy)
+  driver_train.reset(agent.init_policy)
   while step < args.steps:
 
-    if should_eval(step):
-      print('Start evaluation')
-      eval_driver.reset(agent.init_policy)
-      eval_driver(eval_policy, episodes=args.eval_eps)
+    if should_report(step):
+      print('Evaluation')
+      driver_eval.reset(agent.init_policy)
+      driver_eval(eval_policy, episodes=args.eval_eps)
       logger.add(eval_epstats.result(), prefix='epstats')
-      if len(train_replay):
-        mets, _ = agent.report(next(dataset_report), carry_report)
+      if len(replay_train):
+        carry_report, mets = reportfn(carry_report, stream_report)
         logger.add(mets, prefix='report')
-      if len(eval_replay):
-        mets, _ = agent.report(next(dataset_eval), carry_report)
+      if len(replay_eval):
+        carry_eval, mets = reportfn(carry_eval, stream_eval)
         logger.add(mets, prefix='eval')
 
-    train_driver(train_policy, steps=10)
+    driver_train(train_policy, steps=10)
 
     if should_log(step):
       logger.add(agg.result())
       logger.add(train_epstats.result(), prefix='epstats')
-      logger.add(embodied.timer.stats(), prefix='timer')
-      logger.add(train_replay.stats(), prefix='replay')
+      logger.add(replay_train.stats(), prefix='replay')
       logger.add(usage.stats(), prefix='usage')
       logger.add({'fps/policy': policy_fps.result()})
       logger.add({'fps/train': train_fps.result()})
+      logger.add({'timer': elements.timer.stats()['summary']})
       logger.write()
 
     if should_save(step):
-      checkpoint.save()
+      cp.save()
 
   logger.close()

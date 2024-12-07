@@ -2,6 +2,7 @@ import functools
 import os
 import warnings
 
+import elements
 import embodied
 import numpy as np
 
@@ -59,7 +60,7 @@ class LocoNav(embodied.Env):
   @property
   def obs_space(self):
     spaces = self._env.obs_space.copy()
-    spaces['log_coverage'] = embodied.Space(np.int32, low=-1)
+    spaces['log/coverage'] = elements.Space(np.int32, low=-1)
     return spaces
 
   @property
@@ -77,7 +78,7 @@ class LocoNav(embodied.Env):
     global_pos = self._walker.get_pose(
         self._env._dmenv._physics)[0].reshape(-1)
     self._visited.add(tuple(np.round(global_pos[:2]).astype(int).tolist()))
-    obs['log_coverage'] = np.int32(len(self._visited))
+    obs['log/coverage'] = np.int32(len(self._visited))
     return obs
 
   def _make_walker(self, name):

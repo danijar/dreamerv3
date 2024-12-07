@@ -11,11 +11,11 @@ class BSuite(embodied.Env):
         'Warning: BSuite result logging is stateful and therefore training ' +
         'runs cannot be interrupted or restarted.')
     np.int = int  # Patch deprecated Numpy alias used inside BSuite.
-    import bsuite
     from . import from_dm
     if '/' not in task:
       task = f'{task}/0'
-    env = bsuite.load_from_id(task)
+    import bsuite
+    env = bsuite.from_checkpoint_id(task)
     self.num_episodes = 0
     self.max_episodes = env.bsuite_num_episodes
     self.exit_after = None
@@ -43,5 +43,9 @@ class BSuite(embodied.Env):
       if not self.exit_after:
         self.exit_after = time.time() + 600
       if time.time() > self.exit_after:
-        raise RuntimeError('BSuite run complete')
+        if self.xm:
+          wu = self.xm.get_current_work_unit()
+          wu.stop(mark_as_completed=True, message='BSuite run complete')
+        else:
+          raise RuntimeError('BSuite run complete')
     return obs

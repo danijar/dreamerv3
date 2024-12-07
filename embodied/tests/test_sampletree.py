@@ -1,19 +1,15 @@
 import collections
-import pathlib
-import sys
-
-sys.path.append(str(pathlib.Path(__file__).parent.parent.parent))
 
 import numpy as np
 import pytest
-from embodied.replay import sampletree
+from embodied.core import selectors
 
 
 class TestSampleTree:
 
   @pytest.mark.parametrize('branching', [2, 3, 5, 10])
   def test_root_sum(self, branching):
-    tree = sampletree.SampleTree(branching)
+    tree = selectors.SampleTree(branching)
     entries = range(50)
     for index, uprob in enumerate(entries):
       assert tree.root.uprob == sum(entries[:index])
@@ -22,7 +18,7 @@ class TestSampleTree:
   @pytest.mark.parametrize('inserts', [1, 2, 10, 100])
   @pytest.mark.parametrize('branching', [2, 3, 5, 10])
   def test_depth_inserts(self, inserts, branching):
-    tree = sampletree.SampleTree(branching)
+    tree = selectors.SampleTree(branching)
     for index in range(inserts):
       tree.insert(index, 1)
     assert len(tree) == inserts
@@ -34,7 +30,7 @@ class TestSampleTree:
   @pytest.mark.parametrize('remove_every', [2, 3, 4])
   @pytest.mark.parametrize('branching', [2, 3, 5, 10])
   def test_depth_removals(self, inserts, remove_every, branching):
-    tree = sampletree.SampleTree(branching)
+    tree = selectors.SampleTree(branching)
     for index in range(0, inserts, 1):
       tree.insert(index, 1)
     removals = list(range(0, inserts, remove_every))
@@ -48,7 +44,7 @@ class TestSampleTree:
   @pytest.mark.parametrize('inserts', [2, 10, 100])
   @pytest.mark.parametrize('branching', [2, 3, 5, 10])
   def test_removal_num_nodes(self, inserts, branching):
-    tree = sampletree.SampleTree(branching)
+    tree = selectors.SampleTree(branching)
     assert len(self._get_flat_nodes(tree)) == 1
     rng = np.random.default_rng(seed=0)
     for key in rng.permutation(np.arange(inserts)):
@@ -63,7 +59,7 @@ class TestSampleTree:
 
   @pytest.mark.parametrize('branching', [2, 3, 5, 10])
   def test_sample_single(self, branching):
-    tree = sampletree.SampleTree(branching)
+    tree = selectors.SampleTree(branching)
     tree.insert(12, 1.0)
     tree.insert(123, 1.0)
     tree.insert(42, 1.0)
@@ -76,7 +72,7 @@ class TestSampleTree:
   @pytest.mark.parametrize('branching', [2, 3, 5, 10])
   @pytest.mark.parametrize('uprob', [1e-5, 1.0, 1e5])
   def test_sample_uniform(self, inserts, branching, uprob):
-    tree = sampletree.SampleTree(branching, seed=0)
+    tree = selectors.SampleTree(branching, seed=0)
     keys = list(range(inserts))
     for key in keys:
       tree.insert(key, 1.0)
@@ -97,7 +93,7 @@ class TestSampleTree:
   @pytest.mark.parametrize('scale', [1e-5, 1, 1e5])
   @pytest.mark.parametrize('branching', [2, 3, 5, 10])
   def test_sample_frequencies(self, scale, branching):
-    tree = sampletree.SampleTree(branching, seed=0)
+    tree = selectors.SampleTree(branching, seed=0)
     keys = [0, 1, 2, 3, 4, 5]
     uprobs = [0, 3, 1, 1, 2, 2]
     entries = dict(zip(keys, uprobs))
@@ -119,7 +115,7 @@ class TestSampleTree:
 
   @pytest.mark.parametrize('branching', [2, 3, 5, 10])
   def test_update_frequencies(self, branching):
-    tree = sampletree.SampleTree(branching, seed=0)
+    tree = selectors.SampleTree(branching, seed=0)
     keys = [0, 1, 2, 3, 4, 5]
     uprobs = [0, 3, 1, 1, 2, 2]
     entries = dict(zip(keys, uprobs))
@@ -143,7 +139,7 @@ class TestSampleTree:
 
   @pytest.mark.parametrize('branching', [2, 3, 5, 10])
   def test_zero_probs_mixed(self, branching):
-    tree = sampletree.SampleTree(branching, seed=0)
+    tree = selectors.SampleTree(branching, seed=0)
     impossible = []
     for index in range(100):
       if index % 3 == 0:
@@ -156,7 +152,7 @@ class TestSampleTree:
 
   @pytest.mark.parametrize('branching', [2, 3, 5, 10])
   def test_zero_probs_only(self, branching):
-    tree = sampletree.SampleTree(branching, seed=0)
+    tree = selectors.SampleTree(branching, seed=0)
     for index in range(100):
       tree.insert(index, 0.0)
     for _ in range(1000):
@@ -164,7 +160,7 @@ class TestSampleTree:
 
   @pytest.mark.parametrize('branching', [2, 3, 5, 10])
   def test_infinity_probs(self, branching):
-    tree = sampletree.SampleTree(branching, seed=0)
+    tree = selectors.SampleTree(branching, seed=0)
     possible = []
     for index in range(100):
       if index % 3 == 0:

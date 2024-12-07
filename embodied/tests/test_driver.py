@@ -1,8 +1,4 @@
-import pathlib
-import sys
 from functools import partial as bind
-
-sys.path.append(str(pathlib.Path(__file__).parent.parent.parent))
 
 import embodied
 import numpy as np
@@ -51,14 +47,15 @@ class TestDriver:
     driver.reset(agent.init_policy)
     seq = []
     driver.on_step(lambda tran, _: seq.append(tran))
-    action = np.array([1])
-    driver(lambda obs, state: ({'action': action}, {}, state), episodes=2)
+    action = {'act_disc': np.ones(1, int), 'act_cont': np.zeros((1, 6), float)}
+    policy = lambda carry, obs: (carry, action, {})
+    driver(policy, episodes=2)
     assert len(seq) == 12
     seq = {k: np.array([seq[i][k] for i in range(len(seq))]) for k in seq[0]}
     assert (seq['is_first'] == [1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0]).all()
     assert (seq['is_last']  == [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1]).all()
     assert (seq['reset']    == [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1]).all()
-    assert (seq['action']   == [1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0]).all()
+    assert (seq['act_disc'] == [1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0]).all()
 
   def test_agent_inputs(self):
     agent = self._make_agent()
@@ -66,16 +63,16 @@ class TestDriver:
     driver.reset(agent.init_policy)
     inputs = []
     states = []
-    def policy(obs, state=None, mode='train'):
+    def policy(carry, obs, mode='train'):
       inputs.append(obs)
-      states.append(state)
-      act, _, _ = agent.policy(obs, state, mode)
-      return act, {}, 'state'
+      states.append(carry)
+      _, act, _ = agent.policy(carry, obs, mode)
+      return 'carry', act, {}
     seq = []
     driver.on_step(lambda tran, _: seq.append(tran))
     driver(policy, episodes=2)
     assert len(seq) == 22
-    assert states == ([()] + ['state'] * 21)
+    assert states == ([()] + ['carry'] * 21)
     for index in [0, 11]:
       assert inputs[index]['is_first'].item() is True
     for index in [1, 10, 12, 21]:

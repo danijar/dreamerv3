@@ -1,5 +1,6 @@
 import functools
 
+import elements
 import embodied
 import numpy as np
 
@@ -28,10 +29,10 @@ class FromDM(embodied.Env):
         self._obs_empty.append(key)
         del spec[key]
     spaces = {
-        'reward': embodied.Space(np.float32),
-        'is_first': embodied.Space(bool),
-        'is_last': embodied.Space(bool),
-        'is_terminal': embodied.Space(bool),
+        'reward': elements.Space(np.float32),
+        'is_first': elements.Space(bool),
+        'is_last': elements.Space(bool),
+        'is_terminal': elements.Space(bool),
     }
     for key, value in spec.items():
       key = key.replace('/', '_')
@@ -43,7 +44,7 @@ class FromDM(embodied.Env):
     spec = self._env.action_spec()
     spec = spec if self._act_dict else {self._act_key: spec}
     return {
-        'reset': embodied.Space(bool),
+        'reset': elements.Space(bool),
         **{k or self._act_key: self._convert(v) for k, v in spec.items()},
     }
 
@@ -78,11 +79,11 @@ class FromDM(embodied.Env):
 
   def _convert(self, space):
     if hasattr(space, 'num_values'):
-      return embodied.Space(space.dtype, (), 0, space.num_values)
+      return elements.Space(space.dtype, (), 0, space.num_values)
     elif hasattr(space, 'minimum'):
       assert np.isfinite(space.minimum).all(), space.minimum
       assert np.isfinite(space.maximum).all(), space.maximum
-      return embodied.Space(
+      return elements.Space(
           space.dtype, space.shape, space.minimum, space.maximum)
     else:
-      return embodied.Space(space.dtype, space.shape, None, None)
+      return elements.Space(space.dtype, space.shape, None, None)

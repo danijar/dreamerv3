@@ -1,5 +1,6 @@
 import functools
 
+import elements
 import embodied
 import gym
 import numpy as np
@@ -37,10 +38,10 @@ class FromGym(embodied.Env):
     spaces = {k: self._convert(v) for k, v in spaces.items()}
     return {
         **spaces,
-        'reward': embodied.Space(np.float32),
-        'is_first': embodied.Space(bool),
-        'is_last': embodied.Space(bool),
-        'is_terminal': embodied.Space(bool),
+        'reward': elements.Space(np.float32),
+        'is_first': elements.Space(bool),
+        'is_last': elements.Space(bool),
+        'is_terminal': elements.Space(bool),
     }
 
   @functools.cached_property
@@ -50,7 +51,7 @@ class FromGym(embodied.Env):
     else:
       spaces = {self._act_key: self._env.action_space}
     spaces = {k: self._convert(v) for k, v in spaces.items()}
-    spaces['reset'] = embodied.Space(bool)
+    spaces['reset'] = elements.Space(bool)
     return spaces
 
   def step(self, action):
@@ -118,5 +119,5 @@ class FromGym(embodied.Env):
 
   def _convert(self, space):
     if hasattr(space, 'n'):
-      return embodied.Space(np.int32, (), 0, space.n)
-    return embodied.Space(space.dtype, space.shape, space.low, space.high)
+      return elements.Space(np.int32, (), 0, space.n)
+    return elements.Space(space.dtype, space.shape, space.low, space.high)
