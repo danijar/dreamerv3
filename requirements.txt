@@ -2,7 +2,7 @@ av
 chex
 colored_traceback
 einops
-elements>=3.17.0
+elements>=3.18.1
 google-resumable-media>=2.7.2
 granular>=0.20.3
 ipdb
