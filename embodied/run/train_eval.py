@@ -55,7 +55,9 @@ def train_eval(
           episode.add(f'policy_{key}', value, agg='stack')
       elif key.startswith('log/'):
         assert value.ndim == 0, (key, value.shape, value.dtype)
-        episode.add(key, value, agg=('avg', 'max', 'sum'))
+        episode.add(key + '/avg', value, agg='avg')
+        episode.add(key + '/max', value, agg='max')
+        episode.add(key + '/sum', value, agg='sum')
     if tran['is_last']:
       result = episode.result()
       logger.add({
