@@ -211,6 +211,9 @@ class Mixture:
     self.fractions = np.array([fractions[key] for key in keys], np.float32)
     self.rng = np.random.default_rng(seed)
 
+  def __len__(self):
+    return len(self.selectors[0])
+
   def __call__(self):
     return self.rng.choice(self.selectors, p=self.fractions)()
 
