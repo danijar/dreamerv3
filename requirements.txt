@@ -1,3 +1,5 @@
+ale_py==0.9.0
+autorom[accept-rom-license]==0.6.1
 av
 chex
 colored_traceback
