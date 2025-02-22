@@ -17,9 +17,10 @@ class Driver:
       import multiprocessing as mp
       context = mp.get_context()
       self.pipes, pipes = zip(*[context.Pipe() for _ in range(self.length)])
+      self.stop = context.Event()
       fns = [cloudpickle.dumps(fn) for fn in make_env_fns]
       self.procs = [
-          portal.Process(self._env_server, i, pipe, fn, start=True)
+          portal.Process(self._env_server, self.stop, i, pipe, fn, start=True)
           for i, (fn, pipe) in enumerate(zip(fns, pipes))]
       self.pipes[0].send(('act_space',))
       self.act_space = self._receive(self.pipes[0])
@@ -99,11 +100,11 @@ class Driver:
       raise
 
   @staticmethod
-  def _env_server(context, envid, pipe, ctor):
+  def _env_server(stop, envid, pipe, ctor):
     try:
       ctor = cloudpickle.loads(ctor)
       env = ctor()
-      while context.running:
+      while not stop.is_set():
         if not pipe.poll(0.1):
           time.sleep(0.1)
           continue
