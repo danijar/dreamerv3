@@ -67,13 +67,22 @@ Training script:
 
 ```sh
 python dreamerv3/main.py \
-  --logdir ~/logdir/{timestamp} \
+  --logdir ~/logdir/dreamer/{timestamp} \
   --configs crafter \
   --run.train_ratio 32
 ```
 
 To reproduce results, train on the desired task using the corresponding config,
 such as `--configs atari --task atari_pong`.
+
+View results:
+
+```sh
+pip install -U scope
+python -m scope.viewer --basedir ~/logdir --port 8000
+```
+
+Scalar metrics are also writting as JSONL files.
 
 # Tips
 
