@@ -132,6 +132,7 @@ def parallel_learner(agent, barrier, args):
 
   agg = elements.Agg()
   usage = elements.Usage(**args.usage)
+  assert args.log_unit == "second", args.log_unit
   should_log = embodied.GlobalClock(args.log_every)
   should_report = embodied.GlobalClock(args.report_every)
   should_save = embodied.GlobalClock(args.save_every)
@@ -216,6 +217,9 @@ def parallel_learner(agent, barrier, args):
 
     if should_save():
       cp.save()
+      if args.save_intermediate_ckpt:
+        ckpt_step_path = elements.Path(args.logdir) / f"checkpoint_{logger.step.value}.ckpt"
+        cp.save(ckpt_step_path)
 
 
 def parallel_replay(make_replay_train, make_replay_eval, make_stream, args):
