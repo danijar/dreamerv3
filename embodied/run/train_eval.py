@@ -36,9 +36,10 @@ def train_eval(
 
   batch_steps = args.batch_size * args.batch_length
   should_train = elements.when.Ratio(args.train_ratio / batch_steps)
-  should_log = elements.when.Clock(args.log_every)
-  should_report = elements.when.Clock(args.report_every)
-  should_save = elements.when.Clock(args.save_every)
+  should_log_klass = elements.when.Clock if args.log_unit == "second" else elements.when.Every
+  should_log = should_log_klass(args.log_every)
+  should_report = should_log_klass(args.report_every)
+  should_save = should_log_klass(args.save_every)
 
   @elements.timer.section('logfn')
   def logfn(tran, worker, mode):
@@ -154,5 +155,8 @@ def train_eval(
 
     if should_save(step):
       cp.save()
+      if args.save_intermediate_ckpt:
+        ckpt_step_path = logdir / f"checkpoint_{step.value}.ckpt"
+        cp.save(ckpt_step_path)
 
   logger.close()

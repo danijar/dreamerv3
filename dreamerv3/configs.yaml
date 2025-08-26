@@ -35,6 +35,7 @@ defaults:
     minecraft: {size: [64, 64], break_speed: 100.0, logs: False, length: 36000}
     dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1}
     loconav: {size: [64, 64], repeat: 1, camera: -1}
+    kwargs: '{}'
 
   replay:
     size: 5e6
@@ -49,9 +50,11 @@ defaults:
     steps: 1e10
     duration: 0
     train_ratio: 32.0
+    log_unit: second # second/step
     log_every: 120
     report_every: 300
     save_every: 900
+    save_intermediate_ckpt: False
     envs: 16
     eval_envs: 4
     eval_eps: 1

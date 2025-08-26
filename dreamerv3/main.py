@@ -217,6 +217,7 @@ def make_env(config, index, **overrides):
   ctor = {
       'dummy': 'embodied.envs.dummy:Dummy',
       'gym': 'embodied.envs.from_gym:FromGym',
+      'gymnasium': 'embodied.envs.from_gymnasium:FromGymnasium',
       'dm': 'embodied.envs.from_dmenv:FromDM',
       'crafter': 'embodied.envs.crafter:Crafter',
       'dmc': 'embodied.envs.dmc:DMC',
@@ -236,9 +237,13 @@ def make_env(config, index, **overrides):
     module, cls = ctor.split(':')
     module = importlib.import_module(module)
     ctor = getattr(module, cls)
-  kwargs = config.env.get(suite, {})
+  if config.env.kwargs != "{}":
+      import yaml
+      kwargs = yaml.safe_load(config.env.kwargs)
+  else:
+      kwargs = config.env.get(suite, {})
   kwargs.update(overrides)
-  if kwargs.pop('use_seed', False):
+  if kwargs.pop('use_seed', False) or suite == "gymnasium":
     kwargs['seed'] = hash((config.seed, index)) % (2 ** 32 - 1)
   if kwargs.pop('use_logdir', False):
     kwargs['logdir'] = elements.Path(config.logdir) / f'env{index}'
