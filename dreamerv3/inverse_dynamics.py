@@ -109,16 +109,19 @@ def _flatten_obs_part(x):
 
 def _pair_to_input(obs_t, obs_tp1, reward_t, include_reward=True):
     """
-    obs_t / obs_tp1 are dicts of flattened batch-major arrays:
-      each value has shape [N, ...]
-    reward_t has shape [N]
+    Image-only inverse dynamics input:
+      x = [flatten(image_t), flatten(image_t+1), reward_t]
     """
-    keys = sorted(k for k in obs_t.keys() if k not in ('is_first', 'is_last', 'is_terminal', 'reward'))
-    parts = []
-    for k in keys:
-        parts.append(_flatten_obs_part(obs_t[k]))
-    for k in keys:
-        parts.append(_flatten_obs_part(obs_tp1[k]))
+    if 'image' not in obs_t or 'image' not in obs_tp1:
+        raise KeyError(
+            f"Expected 'image' key in obs_t/obs_tp1, got keys "
+            f"{list(obs_t.keys())} and {list(obs_tp1.keys())}"
+        )
+
+    parts = [
+        _flatten_obs_part(obs_t['image']),
+        _flatten_obs_part(obs_tp1['image']),
+    ]
     if include_reward:
         parts.append(np.asarray(reward_t, np.float32).reshape((-1, 1)))
     x = np.concatenate(parts, axis=-1)
