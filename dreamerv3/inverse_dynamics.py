@@ -12,7 +12,8 @@ import optax
 import ruamel.yaml as yaml
 
 from . import main as dv3_main
-
+import nle.dataset as nld
+from PIL import Image
 
 # -----------------------------
 # Config / loading helpers
@@ -307,7 +308,149 @@ def train_inverse_dynamics(
     trainer.save(logdir / save_name)
     return trainer
 
+def tty_to_rgb(chars, colors, size=(64, 64)):
+    chars = np.asarray(chars, dtype=np.uint8)
+    colors = np.asarray(colors, dtype=np.uint8)
 
+    rgb = np.zeros((chars.shape[0], chars.shape[1], 3), dtype=np.uint8)
+    rgb[..., 0] = chars
+    rgb[..., 1] = (colors.astype(np.int32) * 16).clip(0, 255).astype(np.uint8)
+    rgb[..., 2] = ((chars.astype(np.int32) // 2) + (colors.astype(np.int32) * 8)).clip(0, 255).astype(np.uint8)
+
+    img = Image.fromarray(rgb)
+    img = img.resize(size, Image.BILINEAR)
+    return np.array(img, dtype=np.uint8)
+def batch_to_pairs_nld_aa(mb):
+    images = []
+
+    B, T = mb["tty_chars"].shape[:2]
+    assert B == 1, f"Expected batch_size=1 for now, got B={B}"
+
+    for t in range(T):
+        img = tty_to_rgb(mb["tty_chars"][0, t], mb["tty_colors"][0, t])
+        images.append(img)
+
+    images = np.stack(images, axis=0)  # [T, 64, 64, 3]
+    actions = np.asarray(mb["keypresses"][0], dtype=np.int32)
+    scores = np.asarray(mb["scores"][0], dtype=np.float32)
+    rewards = np.diff(scores, prepend=scores[:1])
+
+    obs_t = {"image": images[:-1]}
+    obs_tp1 = {"image": images[1:]}
+    reward_t = rewards[:-1]
+    action_t = actions[:-1]
+
+    return obs_t, obs_tp1, reward_t, action_t
+def make_nld_aa_dataset(dataset_name, batch_size=1):
+    return nld.TtyrecDataset(dataset_name, batch_size=batch_size)
+class NLDInverseDynamicsTrainer:
+
+    def __init__(self, dataset_name, invcfg: InvDynConfig, include_reward=True):
+        self.dataset_name = dataset_name
+        self.invcfg = invcfg
+        self.include_reward = include_reward
+
+        self.dataset = make_nld_aa_dataset(dataset_name, batch_size=1)
+
+        probe = next(iter(self.dataset))
+        obs_t, obs_tp1, reward_t, action_t = batch_to_pairs_nld_aa(probe)
+        x_probe = _pair_to_input(obs_t, obs_tp1, reward_t, include_reward=include_reward)
+
+        self.input_dim = x_probe.shape[-1]
+        self.num_actions = int(np.max(action_t)) + 1
+
+        rng = jax.random.PRNGKey(invcfg.seed)
+        self.params = init_mlp_params(
+            rng, self.input_dim, invcfg.hidden, invcfg.hidden2, self.num_actions
+        )
+
+        global opt
+        opt = optax.adam(invcfg.lr)
+        self.opt_state = opt.init(self.params)
+
+    def _sample_numpy_batch(self):
+        mb = next(iter(self.dataset))
+        obs_t, obs_tp1, reward_t, action_t = batch_to_pairs_nld_aa(mb)
+        x = _pair_to_input(obs_t, obs_tp1, reward_t, include_reward=self.include_reward)
+        y = np.asarray(action_t, dtype=np.int32).reshape(-1)
+        return x, y
+
+    def train(self, steps=None):
+        steps = steps or self.invcfg.train_steps
+        history = []
+
+        for step in range(1, steps + 1):
+            x, y = self._sample_numpy_batch()
+            x = jnp.asarray(x)
+            y = jnp.asarray(y)
+
+            self.params, self.opt_state, mets = train_step(
+                self.params, self.opt_state, (x, y), self.include_reward
+            )
+
+            if step % self.invcfg.log_every == 0 or step == 1:
+                m = jax.tree.map(lambda v: float(v), mets)
+                history.append((step, m))
+                print(
+                    f"[nld-aa inv] step={step:6d} "
+                    f"loss={m['loss']:.4f} "
+                    f"acc={m['acc']:.4f} "
+                    f"top5={m['top5']:.4f}"
+                )
+
+        return history
+
+    def evaluate_once(self):
+        x, y = self._sample_numpy_batch()
+        mets = eval_step(self.params, (jnp.asarray(x), jnp.asarray(y)))
+        return jax.tree.map(lambda v: float(v), mets)
+
+    def save(self, outpath):
+        outpath = elements.Path(outpath)
+        outpath.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(
+            str(outpath),
+            **jax.tree.map(np.array, self.params),
+            input_dim=np.array(self.input_dim),
+            num_actions=np.array(self.num_actions),
+        )
+        print(f"Saved inverse dynamics params to {outpath}")
+def train_inverse_dynamics_nld_aa(
+    dataset_name="nld-aa-v0",
+    steps=10_000,
+    lr=1e-4,
+    hidden=512,
+    hidden2=512,
+    include_reward=True,
+    seed=0,
+    save_path="/content/drive/MyDrive/nld_aa_inverse_image_only.npz",
+):
+    invcfg = InvDynConfig(
+        hidden=hidden,
+        hidden2=hidden2,
+        lr=lr,
+        train_steps=steps,
+        include_reward=include_reward,
+        seed=seed,
+    )
+
+    trainer = NLDInverseDynamicsTrainer(
+        dataset_name=dataset_name,
+        invcfg=invcfg,
+        include_reward=include_reward,
+    )
+    trainer.train(steps)
+
+    eval_mets = trainer.evaluate_once()
+    print(
+        f"[nld-aa inv] eval "
+        f"loss={eval_mets['loss']:.4f} "
+        f"acc={eval_mets['acc']:.4f} "
+        f"top5={eval_mets['top5']:.4f}"
+    )
+
+    trainer.save(save_path)
+    return trainer
 def main_cli():
     parser = argparse.ArgumentParser()
     parser.add_argument('--logdir', type=str, required=True)
@@ -320,18 +463,37 @@ def main_cli():
     parser.add_argument('--no_reward', action='store_true')
     parser.add_argument('--save_name', type=str, default='inverse_dynamics_params.npz')
     args = parser.parse_args()
+    parser.add_argument('--source', type=str, default='replay', choices=['replay', 'nld-aa'])
+    parser.add_argument('--dataset_name', type=str, default='nld-aa-v0')
+    parser.add_argument('--save_path', type=str, default=None)
 
-    train_inverse_dynamics(
-        logdir=args.logdir,
-        replay_dir=args.replay_dir,
-        steps=args.steps,
-        lr=args.lr,
-        hidden=args.hidden,
-        hidden2=args.hidden2,
-        include_reward=not args.no_reward,
-        seed=args.seed,
-        save_name=args.save_name,
-    )
+    if args.source == 'replay':
+        train_inverse_dynamics(
+            logdir=args.logdir,
+            replay_dir=args.replay_dir,
+            steps=args.steps,
+            lr=args.lr,
+            hidden=args.hidden,
+            hidden2=args.hidden2,
+            include_reward=not args.no_reward,
+            seed=args.seed,
+            save_name=args.save_name,
+        )
+    else:
+        save_path = args.save_path
+        if save_path is None:
+            save_path = f"/content/drive/MyDrive/{args.dataset_name}_inverse_image_only.npz"
+
+        train_inverse_dynamics_nld_aa(
+            dataset_name=args.dataset_name,
+            steps=args.steps,
+            lr=args.lr,
+            hidden=args.hidden,
+            hidden2=args.hidden2,
+            include_reward=not args.no_reward,
+            seed=args.seed,
+            save_path=save_path,
+        )
 
 
 if __name__ == '__main__':
