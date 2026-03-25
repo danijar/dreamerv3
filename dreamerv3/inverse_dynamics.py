@@ -341,17 +341,17 @@ def batch_to_pairs_nld_aa(mb):
     action_t = actions[:-1]
 
     return obs_t, obs_tp1, reward_t, action_t
-def make_nld_aa_dataset(dataset_name, batch_size=1):
-    return nld.TtyrecDataset(dataset_name, batch_size=batch_size)
+def make_nld_aa_dataset(dataset_name, batch_size=1, dbfilename="ttyrecs.db"):
+    return nld.TtyrecDataset(dataset_name, batch_size=batch_size, dbfilename=dbfilename)
 class NLDInverseDynamicsTrainer:
 
-    def __init__(self, dataset_name, invcfg: InvDynConfig, include_reward=True):
+    def __init__(self, dataset_name, invcfg: InvDynConfig, include_reward=True, dbfilename="ttyrecs.db"):
         self.dataset_name = dataset_name
         self.invcfg = invcfg
         self.include_reward = include_reward
+        self.dbfilename = dbfilename
 
-        self.dataset = make_nld_aa_dataset(dataset_name, batch_size=1)
-
+        self.dataset = make_nld_aa_dataset(dataset_name, batch_size=1, dbfilename=dbfilename)
         probe = next(iter(self.dataset))
         obs_t, obs_tp1, reward_t, action_t = batch_to_pairs_nld_aa(probe)
         x_probe = _pair_to_input(obs_t, obs_tp1, reward_t, include_reward=include_reward)
@@ -424,6 +424,7 @@ def train_inverse_dynamics_nld_aa(
     include_reward=True,
     seed=0,
     save_path="/content/drive/MyDrive/nld_aa_inverse_image_only.npz",
+    dbfilename="ttyrecs.db",
 ):
     invcfg = InvDynConfig(
         hidden=hidden,
@@ -438,6 +439,7 @@ def train_inverse_dynamics_nld_aa(
         dataset_name=dataset_name,
         invcfg=invcfg,
         include_reward=include_reward,
+        dbfilename=dbfilename,
     )
     trainer.train(steps)
 
@@ -453,7 +455,9 @@ def train_inverse_dynamics_nld_aa(
     return trainer
 def main_cli():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--logdir', type=str, required=True)
+
+    # shared / existing args
+    parser.add_argument('--logdir', type=str, default=None)
     parser.add_argument('--replay_dir', type=str, default=None)
     parser.add_argument('--steps', type=int, default=10_000)
     parser.add_argument('--lr', type=float, default=1e-4)
@@ -462,12 +466,18 @@ def main_cli():
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--no_reward', action='store_true')
     parser.add_argument('--save_name', type=str, default='inverse_dynamics_params.npz')
-    args = parser.parse_args()
+
+    # new args
     parser.add_argument('--source', type=str, default='replay', choices=['replay', 'nld-aa'])
     parser.add_argument('--dataset_name', type=str, default='nld-aa-v0')
     parser.add_argument('--save_path', type=str, default=None)
+    parser.add_argument('--dbfilename', type=str, default='/content/ttyrecs.db')
+    args = parser.parse_args()
 
     if args.source == 'replay':
+        if args.logdir is None:
+            parser.error("--logdir is required when --source replay")
+
         train_inverse_dynamics(
             logdir=args.logdir,
             replay_dir=args.replay_dir,
@@ -493,8 +503,8 @@ def main_cli():
             include_reward=not args.no_reward,
             seed=args.seed,
             save_path=save_path,
+            dbfilename=args.dbfilename,
         )
-
 
 if __name__ == '__main__':
     main_cli()
