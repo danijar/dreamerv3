@@ -144,7 +144,7 @@ class Atari(embodied.Env):
     self._render()
     for i, dst in enumerate(self.buffers):
       if i > 0:
-        np.copyto(self.buffers[0], dst)
+        np.copyto(dst, self.buffers[0])
 
   def _render(self, reset=False):
     self.buffers.appendleft(self.buffers.pop())
