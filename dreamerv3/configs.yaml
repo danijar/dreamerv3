@@ -35,6 +35,7 @@ defaults:
     minecraft: {size: [64, 64], break_speed: 100.0, logs: False, length: 36000}
     dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1}
     loconav: {size: [64, 64], repeat: 1, camera: -1}
+    nethack: {size: [64, 64], max_episode_steps: 5000, use_seed: True}
 
   replay:
     size: 5e6
@@ -194,6 +195,10 @@ loconav:
   task: loconav_ant_maze_m
   env.loconav.repeat: 1
   run.train_ratio: 256
+
+nethack:
+  task: nethack_Challenge
+  run: {steps: 1e8, train_ratio: 64, envs: 8}
 
 multicpu:
   batch_size: 12
