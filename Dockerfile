@@ -1,6 +1,6 @@
 # docker build -f Dockerfile -t img . && \
 # docker run -it --rm -v ~/logdir/docker:/logdir img \
-#   python main.py --logdir /logdir/{timestamp} --configs minecraft debug --task minecraft_diamond
+#   python dreamerv3/main.py --logdir /logdir/{timestamp} --configs minecraft debug --task minecraft_diamond
 
 FROM ghcr.io/nvidia/driver:7c5f8932-550.144.03-ubuntu24.04
 
