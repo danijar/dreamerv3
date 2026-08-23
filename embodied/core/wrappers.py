@@ -316,8 +316,9 @@ class ResizeImage(Wrapper):
     return obs
 
   def _resize(self, image):
+    # Array shapes are (height, width), while Pillow expects (width, height).
     image = self._Image.fromarray(image)
-    image = image.resize(self._size, self._Image.NEAREST)
+    image = image.resize(self._size[::-1], self._Image.NEAREST)
     image = np.array(image)
     return image
 
