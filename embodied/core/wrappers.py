@@ -98,8 +98,8 @@ class NormalizeAction(Wrapper):
 
   @functools.cached_property
   def act_space(self):
-    low = np.where(self._mask, -np.ones_like(self._low), self._low)
-    high = np.where(self._mask, np.ones_like(self._low), self._high)
+    low = np.where(self._mask, -np.ones_like(self._low), self._space.low)
+    high = np.where(self._mask, np.ones_like(self._low), self._space.high)
     space = elements.Space(np.float32, self._space.shape, low, high)
     return {**self.env.act_space, self._key: space}
 
@@ -416,3 +416,4 @@ class RestartOnException(Wrapper):
       self.env = self._ctor()
       action['reset'] = np.ones_like(action['reset'])
       return self.env.step(action)
+
