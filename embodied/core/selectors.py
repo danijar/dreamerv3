@@ -49,7 +49,6 @@ class Uniform:
 
   def __delitem__(self, key):
     with self.lock:
-      assert 2 <= len(self), len(self)
       index = self.indices.pop(key)
       last = self.keys.pop()
       if index != len(self.keys):
@@ -352,3 +351,4 @@ class SampleTreeEntry:
     self.parent = None
     self.key = key
     self.uprob = uprob
+
