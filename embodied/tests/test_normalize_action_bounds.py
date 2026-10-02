@@ -11,7 +11,9 @@ class ActionEnv:
   def __init__(self):
     self.act_space = {
         'action': elements.Space(
-            np.float32, (4,), [-2, -np.inf, 0, -np.inf], [6, np.inf, np.inf, 4]),
+            np.float32, (4,),
+            np.array([-2, -np.inf, 0, -np.inf], np.float32),
+            np.array([6, np.inf, np.inf, 4], np.float32)),
         'reset': elements.Space(bool),
     }
 
@@ -37,6 +39,7 @@ class TestNormalizeActionBounds(unittest.TestCase):
       expected = action.copy()
       expected[0] = 2 + 4 * bounded
       np.testing.assert_array_equal(result, expected)
+      self.assertEqual(result.dtype, np.float32)
       self.assertTrue(result in env.act_space['action'])
 
 
