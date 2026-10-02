@@ -58,16 +58,24 @@ class FromGym(embodied.Env):
     if action['reset'] or self._done:
       self._done = False
       obs = self._env.reset()
+      if isinstance(obs, tuple) and len(obs) == 2 and isinstance(obs[1], dict):
+        obs, self._info = obs
       return self._obs(obs, 0.0, is_first=True)
     if self._act_dict:
-      action = self._unflatten(action)
+      action = self._unflatten({k: v for k, v in action.items() if k != 'reset'})
     else:
       action = action[self._act_key]
-    obs, reward, self._done, self._info = self._env.step(action)
+    result = self._env.step(action)
+    if len(result) == 5:
+      obs, reward, terminated, truncated, self._info = result
+      self._done = terminated or truncated
+    else:
+      obs, reward, self._done, self._info = result
+      terminated = self._done and not self._info.get('TimeLimit.truncated', False)
     return self._obs(
         obs, reward,
         is_last=bool(self._done),
-        is_terminal=bool(self._info.get('is_terminal', self._done)))
+        is_terminal=bool(self._info.get('is_terminal', terminated)))
 
   def _obs(
       self, obs, reward, is_first=False, is_last=False, is_terminal=False):
@@ -121,3 +129,4 @@ class FromGym(embodied.Env):
     if hasattr(space, 'n'):
       return elements.Space(np.int32, (), 0, space.n)
     return elements.Space(space.dtype, space.shape, space.low, space.high)
+
