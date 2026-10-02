@@ -176,7 +176,7 @@ class Normal(Output):
     return jax.scipy.stats.norm.logpdf(f32(event), self.mean, self.stddev)
 
   def entropy(self):
-    return 0.5 * jnp.log(2 * jnp.pi * jnp.square(self.stddev)) + 0.5
+    return jnp.log(self.stddev) + 0.5 * jnp.log(2 * jnp.pi) + 0.5
 
   def kl(self, other):
     assert isinstance(other, type(self)), (self, other)
