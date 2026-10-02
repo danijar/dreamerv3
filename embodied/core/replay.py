@@ -333,28 +333,49 @@ class Replay:
       if total >= amount:
         break
 
+    starts = set(uuids[:numchunks])
+    required = set(starts)
+    metadata = {}
+    for name in names_loaded + names_ondisk:
+      _, uuid, succ, length = elements.Path(name).stem.split('-')
+      metadata[elements.UUID(uuid)] = (elements.UUID(succ), int(length))
+    for uuid in starts:
+      if not numitems[uuid]:
+        continue
+      # The last selected start needs these steps beyond its starting chunk.
+      remaining = self.length + numitems[uuid] - 1 - metadata[uuid][1]
+      while remaining > 0:
+        uuid = metadata[uuid][0]
+        required.add(uuid)
+        if uuid in starts and numitems[uuid]:
+          # Its selected windows also cover the remainder of this window.
+          break
+        remaining -= metadata[uuid][1]
+
     load = bind(chunklib.Chunk.load, error='none')
-    filenames = [directory / x for x in names_ondisk[:numchunks]]
+    filenames = [directory / name for uuid, name in zip(uuids, names_ondisk)
+                 if uuid in required]
 
     with ThreadPoolExecutor(16, 'replay_loader') as pool:
       chunks = [x for x in pool.map(load, filenames) if x]
 
-    # We need to recompute the number of items per chunk now because some
-    # chunks may be corrupted and thus not available.
-    # numitems = self._numitems(chunks + list(self.chunks.values()))
-    numitems = self._numitems(chunks)
-
     with self.rwlock.writing:
+      # Corrupt chunks are unavailable, but previously loaded successors can
+      # still complete sequences that start in the newly loaded chunks.
+      numitems = self._numitems(chunks + list(self.chunks.values()))
       self.saved.update([chunk.uuid for chunk in chunks])
       with self.refs_lock:
         for chunk in chunks:
           self.chunks[chunk.uuid] = chunk
           self.refs[chunk.uuid] = 0
-        for chunk in reversed(chunks):
+        # Protect the complete successor graph before capacity eviction starts.
+        for chunk in chunks:
           amount = numitems[chunk.uuid]
           self.refs[chunk.uuid] += amount
           if chunk.succ in self.refs:
             self.refs[chunk.succ] += 1
+        for chunk in reversed(chunks):
+          amount = numitems[chunk.uuid]
           for index in range(amount):
             self._insert(chunk.uuid, index)
 
@@ -373,18 +394,31 @@ class Replay:
     chunks = [x.filename if hasattr(x, 'filename') else x for x in chunks]
     if not chunks:
       return 0
-    chunks = list(reversed(sorted([elements.Path(x).stem for x in chunks])))
-    times, uuids, succs, lengths = zip(*[x.split('-') for x in chunks])
+    chunks = [elements.Path(x).stem for x in chunks]
+    _, uuids, succs, lengths = zip(*[x.split('-') for x in chunks])
     uuids = [elements.UUID(x) for x in uuids]
     succs = [elements.UUID(x) for x in succs]
     lengths = {k: int(v) for k, v in zip(uuids, lengths)}
+    successors = dict(zip(uuids, succs))
     future = {}
-    for uuid, succ in zip(uuids, succs):
-      future[uuid] = lengths[uuid] + future.get(succ, 0)
+    for uuid in uuids:
+      if uuid in future:
+        continue
+      # UUID order breaks timestamp ties, so it need not match successor order.
+      path, visited = [], set()
+      while uuid in lengths and uuid not in future:
+        if uuid in visited:
+          raise ValueError('Replay chunk successor cycle')
+        path.append(uuid)
+        visited.add(uuid)
+        uuid = successors[uuid]
+      total = future.get(uuid, 0)
+      for uuid in reversed(path):
+        total += lengths[uuid]
+        future[uuid] = total
     numitems = {}
-    for uuid, succ in zip(uuids, succs):
-      numitems[uuid] = lengths[uuid] + 1 - self.length + future.get(succ, 0)
-    numitems = {k: np.clip(v, 0, lengths[k]) for k, v in numitems.items()}
+    for uuid in uuids:
+      numitems[uuid] = min(lengths[uuid], max(0, future[uuid] + 1 - self.length))
     return numitems
 
   def _notempty(self, reason=False):
