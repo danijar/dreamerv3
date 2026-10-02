@@ -23,6 +23,10 @@ ENV PATH="/venv/bin:$PATH"
 RUN pip install -U pip setuptools
 
 # Envs
+# The DMLab install script builds DeepMind Lab with Bazelisk, which resolves
+# to the latest Bazel release. Bazel 8 removed the native sh_binary rule that
+# the lab repo still uses, so pin Bazel 7 to keep the build working.
+ENV USE_BAZEL_VERSION=7.4.1
 RUN wget -O - https://gist.githubusercontent.com/danijar/ca6ab917188d2e081a8253b3ca5c36d3/raw/install-dmlab.sh | sh
 RUN pip install ale_py==0.9.0 autorom[accept-rom-license]==0.6.1
 RUN pip install procgen_mirror
