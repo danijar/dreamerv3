@@ -64,6 +64,7 @@ class Prefetch(base.Stream):
       for _ in range(self.amount):
         self.queue.get()
     self.source.load(state)
+    self.state = state
     if self.started:
       self.requests.release(self.amount)
 
