@@ -22,7 +22,7 @@ class Replay:
     self.chunksize = chunksize
     self.name = name
 
-    self.sampler = selector or selectors.Uniform(seed)
+    self.sampler = selectors.Uniform(seed) if selector is None else selector
 
     self.chunks = {}
     self.refs = {}
