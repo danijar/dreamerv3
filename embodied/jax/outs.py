@@ -64,7 +64,7 @@ class Agg(Output):
     return self.output.logp(event).sum(self.axes)
 
   def prob(self, event):
-    return self.output.prob(event).sum(self.axes)
+    return jnp.exp(self.logp(event))
 
   def entropy(self):
     entropy = self.output.entropy()
@@ -176,7 +176,7 @@ class Normal(Output):
     return jax.scipy.stats.norm.logpdf(f32(event), self.mean, self.stddev)
 
   def entropy(self):
-    return 0.5 * jnp.log(2 * jnp.pi * jnp.square(self.stddev)) + 0.5
+    return jnp.log(self.stddev) + 0.5 * jnp.log(2 * jnp.pi) + 0.5
 
   def kl(self, other):
     assert isinstance(other, type(self)), (self, other)
@@ -202,7 +202,7 @@ class Binary(Output):
 
   def sample(self, seed, shape=()):
     prob = jax.nn.sigmoid(self.logit)
-    return jax.random.bernoulli(seed, prob, -1, shape + self.logit.shape)
+    return jax.random.bernoulli(seed, prob, shape=shape + self.logit.shape)
 
 
 class Categorical(Output):
