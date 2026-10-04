@@ -286,8 +286,9 @@ class SampleTree:
 
   def update(self, key, uprob):
     entry = self.entries[key]
+    num_infinite = int(uprob == np.inf) - entry.num_infinite
     entry.uprob = uprob
-    entry.parent.recompute()
+    entry.parent.recompute(num_infinite=num_infinite)
 
   def sample(self):
     node = self.root
@@ -295,10 +296,11 @@ class SampleTree:
       uprobs = np.array([x.uprob for x in node.children])
       total = uprobs.sum()
       if not np.isfinite(total):
-        finite = np.isinf(uprobs)
-        probs = finite / finite.sum()
+        counts = np.array([x.num_infinite for x in node.children])
+        probs = counts / counts.sum()
       elif total == 0:
-        probs = np.ones(len(uprobs)) / len(uprobs)
+        counts = np.array([x.num_entries for x in node.children])
+        probs = counts / counts.sum()
       else:
         probs = uprobs / total
       choice = self.rng.choice(np.arange(len(uprobs)), p=probs)
@@ -308,12 +310,14 @@ class SampleTree:
 
 class SampleTreeNode:
 
-  __slots__ = ('parent', 'children', 'uprob')
+  __slots__ = ('parent', 'children', 'uprob', 'num_entries', 'num_infinite')
 
   def __init__(self, parent=None):
     self.parent = parent
     self.children = []
     self.uprob = 0
+    self.num_entries = 0
+    self.num_infinite = 0
 
   def __repr__(self):
     return (
@@ -332,16 +336,20 @@ class SampleTreeNode:
       child.parent.remove(child)
     child.parent = self
     self.children.append(child)
-    self.recompute()
+    self.recompute(child.num_entries, child.num_infinite)
 
   def remove(self, child):
     child.parent = None
     self.children.remove(child)
-    self.recompute()
+    self.recompute(-child.num_entries, -child.num_infinite)
 
-  def recompute(self):
+  def recompute(self, num_entries=0, num_infinite=0):
     self.uprob = sum(x.uprob for x in self.children)
-    self.parent and self.parent.recompute()
+    if num_entries:
+      self.num_entries += num_entries
+    if num_infinite:
+      self.num_infinite += num_infinite
+    self.parent and self.parent.recompute(num_entries, num_infinite)
 
 
 class SampleTreeEntry:
@@ -352,3 +360,11 @@ class SampleTreeEntry:
     self.parent = None
     self.key = key
     self.uprob = uprob
+
+  @property
+  def num_entries(self):
+    return 1
+
+  @property
+  def num_infinite(self):
+    return int(self.uprob == np.inf)
