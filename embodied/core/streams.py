@@ -140,14 +140,24 @@ class Consec(base.Stream):
     return chunk
 
   def save(self):
+    current = None
+    if 0 < self.index < self.consec:
+      current = {k: v.copy() for k, v in self.current.items()}
     return {
         'source': self.source.save(),
         'index': self.index,
+        'current': current,
     }
 
   def load(self, data):
+    index = data['index']
+    current = data.get('current')
+    if 0 < index < self.consec and current is None:
+      raise ValueError('Incomplete sequence checkpoint is missing its batch.')
     self.source.load(data['source'])
-    self.index = data['index']
+    self.index = index
+    self.current = (
+        {k: v.copy() for k, v in current.items()} if current is not None else None)
 
 
 class Zip(base.Stream):
