@@ -143,14 +143,14 @@ class Prioritized:
   def prioritize(self, stepids, priorities):
     if not isinstance(stepids[0], bytes):
       stepids = [x.tobytes() for x in stepids]
-    for stepid, priority in zip(stepids, priorities):
-      try:
-        self.prios[stepid] = priority
-      except KeyError:
-        print('Ignoring priority update for removed time step.')
     items = []
-    for stepid in stepids:
-      items += self.stepitems[stepid]
+    for stepid, priority in zip(stepids, priorities):
+      stepitems = self.stepitems.get(stepid)
+      if not stepitems:
+        # Delayed updates must not recreate metadata for evicted steps.
+        continue
+      self.prios[stepid] = priority
+      items += stepitems
     for key in list(set(items)):
       try:
         self.tree.update(key, self._aggregate(key))
