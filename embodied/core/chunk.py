@@ -65,12 +65,16 @@ class Chunk:
   def save(self, directory, log=False):
     assert not self.saved
     self.saved = True
-    filename = elements.Path(directory) / self.filename
-    data = {k: v[:self.length] for k, v in self.data.items()}
-    with io.BytesIO() as stream:
-      np.savez_compressed(stream, **data)
-      stream.seek(0)
-      filename.write(stream.read(), mode='wb')
+    try:
+      filename = elements.Path(directory) / self.filename
+      data = {k: v[:self.length] for k, v in self.data.items()}
+      with io.BytesIO() as stream:
+        np.savez_compressed(stream, **data)
+        stream.seek(0)
+        filename.write(stream.read(), mode='wb')
+    except Exception:
+      self.saved = False
+      raise
     log and print(f'Saved chunk: {filename.name}')
 
   @classmethod
