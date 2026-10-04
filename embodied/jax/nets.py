@@ -134,8 +134,9 @@ def rope(x, ts=None, inverse=False, maxlen=4096):
   freq_exponents = (2.0 / D) * jnp.arange(D // 2)  # [D/2]
   timescale = maxlen ** freq_exponents
   radians = ts[:, :, None] / timescale[None, None, :]  # [B, T, D/2]
-  radians = radians[..., None, :].astype(x.dtype)  # [B, T, 1, D/2]
-  sin, cos = jnp.sin(radians), jnp.cos(radians)
+  radians = radians[..., None, :]  # [B, T, 1, D/2]
+  radians = radians.astype(jnp.promote_types(x.dtype, jnp.float32))
+  sin, cos = jnp.sin(radians).astype(x.dtype), jnp.cos(radians).astype(x.dtype)
   x1, x2 = jnp.split(x, 2, axis=-1)  # [B, T, H, D/2]
   res = jnp.concatenate([x1 * cos - x2 * sin, x2 * cos + x1 * sin], axis=-1)
   return res
