@@ -377,7 +377,49 @@ class Agent(embodied.jax.Agent):
       sched = optax.join_schedules([ramp, sched], [warmup])
     chain.append(optax.scale_by_learning_rate(sched))
     return optax.chain(*chain)
+    def surprise(self, carry, obs, prevact, horizon=8):
+      """Compute posterior predictive surprise on real data.
+      No training, no gradients, no ninjax seed required.
+      """
+      enc_carry, dyn_carry, dec_carry, _ = carry
+      reset = obs['is_first']
+      B, T = reset.shape
+      assert B == 1
 
+      # Posterior
+      enc_carry, _, tokens = self.enc(enc_carry, obs, reset, training=False)
+      dyn_carry, dyn_entries, repfeat = self.dyn.observe(
+          dyn_carry, tokens, prevact, reset, training=False)
+
+      actual_feat = self.feat2tensor(repfeat)
+
+      step_surprise = []
+      for t in range(T - 1):
+          h = min(horizon, T - 1 - t)
+          if h <= 0:
+              break
+
+          start = {
+              'deter': dyn_entries['deter'][:, t],
+              'stoch': dyn_entries['stoch'][:, t],
+          }
+
+          futureact = {
+              k: v[:, t+1 : t+1+h] for k, v in prevact.items()
+          }
+
+          _, imgfeat, _ = self.dyn.imagine(
+              start, futureact, length=h, training=False)
+
+          imag_feat = self.feat2tensor(imgfeat)
+          actual_next = actual_feat[:, t+1 : t+1+h]
+
+          err = ((imag_feat - actual_next) ** 2).mean(-1)   # [B, h]
+          step_surprise.append(err[:, 0])                  # take first step of each rollout
+
+      step_surprise = jnp.concatenate(step_surprise, axis=0)  # [num_steps]
+
+      return step_surprise   # or return a dict if you want more diagnostics
 
 def imag_loss(
     act, rew, con,
@@ -477,6 +519,7 @@ def repl_loss(
   metrics = {}
 
   return losses, outs, metrics
+
 
 
 def lambda_return(last, term, rew, val, boot, disc, lam):

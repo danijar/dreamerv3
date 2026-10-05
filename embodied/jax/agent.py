@@ -153,6 +153,11 @@ class Agent(embodied.Agent):
         nj.pure(self.model.policy), self.policy_mesh,
         (pp, pm, ps, ps), (ps, ps, ps), ar,
         static_argnums=(4,), **shared_kwargs)
+    # self._surprise = transform.apply(
+    #     nj.pure(self.model.surprise), self.train_mesh,
+    #     (tp, tm, ts, ts, ts), (ts,), ar,
+    #     single_output=True, static_argnums=(5,),
+    #     **shared_kwargs)
 
     self.policy_lock = threading.Lock()
     self.train_lock = threading.Lock()
@@ -491,6 +496,16 @@ class Agent(embodied.Agent):
       return ''.join(f'  {line}\n' for line in lines)
     except (TypeError, AttributeError, KeyError):
       return 'No available'
+  # @elements.timer.section('jaxagent_surprise')
+  def surprise(self, carry, obs, prevact, horizon=8):
+      """Simple direct surprise computation for offline human data analysis."""
+      # Ensure inputs are on the correct device
+      obs = internal.device_put(obs, self.train_sharded)
+      prevact = internal.device_put(prevact, self.train_sharded)
+
+      # Direct call to inner model (no nj.pure, no seed hassle)
+      return self.model.surprise(carry, obs, prevact, horizon)
+
 
 def init(fun, **jit_kwargs):
   if not getattr(fun, '_is_pure', False):
