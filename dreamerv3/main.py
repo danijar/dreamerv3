@@ -229,6 +229,7 @@ def make_env(config, index, **overrides):
       'langroom': 'embodied.envs.langroom:LangRoom',
       'procgen': 'embodied.envs.procgen:ProcGen',
       'bsuite': 'embodied.envs.bsuite:BSuite',
+      'nethack': 'embodied.envs.nethack:NetHack',
       'memmaze': lambda task, **kw: from_gym.FromGym(
           f'MemoryMaze-{task}-v0', **kw),
   }[suite]
