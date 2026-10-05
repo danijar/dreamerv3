@@ -17,3 +17,5 @@ optax
 portal>=3.5.0
 scope>=0.4.4
 tqdm
+crafter
+nle
