@@ -357,7 +357,8 @@ class Agent(embodied.jax.Agent):
     chain = []
     chain.append(embodied.jax.opt.clip_by_agc(agc))
     chain.append(embodied.jax.opt.scale_by_rms(beta2, eps))
-    chain.append(embodied.jax.opt.scale_by_momentum(beta1, nesterov))
+    if momentum:
+      chain.append(embodied.jax.opt.scale_by_momentum(beta1, nesterov))
     if wd:
       assert not wdregex[0].isnumeric(), wdregex
       pattern = re.compile(wdregex)
