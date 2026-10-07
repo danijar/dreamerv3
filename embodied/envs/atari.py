@@ -173,5 +173,5 @@ class Atari(embodied.Env):
         reward=np.float32(reward),
         is_first=is_first,
         is_last=is_last,
-        is_terminal=is_last,
+        is_terminal=is_terminal,
     )
