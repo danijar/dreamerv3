@@ -206,6 +206,20 @@ def make_replay(config, folder, mode='train'):
         recency=selectors.Recency(recency),
     ), config.replay.fracs)
 
+  if mode == 'train' and config.replay.prio_mode != 'none':
+    assert config.replay.fracs.uniform == 1, (
+        'replay.prio_mode と replay.fracs(既存の優先度付き)は併用しない')
+    rep = config.replay
+    kwargs['selector'] = embodied.replay.selectors.Scored(
+        alpha=rep.prio_alpha, seed=config.seed)
+    kwargs['scorer'] = embodied.replay.reward_scorer.WindowScorer(
+        mode=rep.prio_mode, eps=rep.prio_eps, fire_id=rep.prio_fire_id,
+        fire_weight=rep.prio_fire_weight,
+        fire_threshold=rep.prio_fire_threshold)
+    print(
+        f'[replay] 重要度サンプリング: mode={rep.prio_mode} '
+        f'alpha={rep.prio_alpha} eps={rep.prio_eps}')
+
   return embodied.replay.Replay(**kwargs)
 
 
