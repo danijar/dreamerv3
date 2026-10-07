@@ -44,6 +44,14 @@ defaults:
     priosignal: model
     recexp: 1.0
     chunksize: 1024
+    # 窓の重要度サンプリング(none なら従来どおり一様)。none | reward | reward_fire
+    # 確率 ∝ (スコア + prio_eps) ** prio_alpha。prio_alpha=0 で一様と同じ。
+    prio_mode: none
+    prio_alpha: 0.5
+    prio_eps: 0.1
+    prio_fire_id: 14
+    prio_fire_weight: 1.0
+    prio_fire_threshold: 0.5
 
   run:
     steps: 1e10

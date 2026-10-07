@@ -197,6 +197,48 @@ class Prioritized:
       return mean
 
 
+class Scored:
+  """項目(窓)ごとに付けた重要度に比例して選ぶ。確率は priority ** alpha に比例する。
+
+  重要度は、Replay が項目を追加する直前に set_priority() で渡す。
+  項目ごとに数値を1つだけ持つ(Prioritized のように各ステップのIDは持たない)
+  ので、バッファが大きくても軽い。優先度は追加時に決まり、後から変えない。
+  追加・削除は学習側とは別のスレッドから呼ばれるため、ロックで守る。
+
+  注意: __getitem__ / __iter__ は定義しないこと。Mixture が選択肢を numpy 配列に
+  する際に、シーケンスと誤認される。
+  """
+
+  def __init__(self, alpha=0.5, branching=16, seed=0):
+    assert alpha >= 0, alpha
+    self.alpha = float(alpha)
+    self.tree = SampleTree(branching, seed)
+    self.pending = {}
+    self.lock = threading.Lock()
+
+  def __len__(self):
+    return len(self.tree)
+
+  def __call__(self):
+    with self.lock:
+      return self.tree.sample()
+
+  def set_priority(self, key, priority):
+    assert priority > 0, priority  # 0 だと一度も選ばれない
+    with self.lock:
+      self.pending[key] = float(priority)
+
+  def __setitem__(self, key, stepids):
+    with self.lock:
+      priority = self.pending.pop(key, 1.0)
+      self.tree.insert(key, priority ** self.alpha)
+
+  def __delitem__(self, key):
+    with self.lock:
+      self.pending.pop(key, None)
+      self.tree.remove(key)
+
+
 class Mixture:
 
   def __init__(self, selectors, fractions, seed=0):

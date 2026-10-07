@@ -8,6 +8,7 @@ import numpy as np
 
 from . import chunk as chunklib
 from . import limiters
+from . import reward_scorer  # noqa: F401  (embodied.replay.reward_scorer として使う)
 from . import selectors
 
 
@@ -15,14 +16,20 @@ class Replay:
 
   def __init__(
       self, length, capacity=None, directory=None, chunksize=1024,
-      online=False, selector=None, save_wait=False, name='unnamed', seed=0):
+      online=False, selector=None, save_wait=False, name='unnamed', seed=0,
+      scorer=None):
 
     self.length = length
     self.capacity = capacity
     self.chunksize = chunksize
     self.name = name
 
-    self.sampler = selector or selectors.Uniform(seed)
+    # `selector or ...` だと、__len__ を持つ空のセレクタが偽とみなされ、黙って
+    # Uniform に置き換わってしまう。None かどうかで判定する。
+    self.sampler = selector if selector is not None else selectors.Uniform(seed)
+    self.scorer = scorer
+    if scorer is not None:
+      assert hasattr(self.sampler, 'set_priority'), type(self.sampler)
 
     self.chunks = {}
     self.refs = {}
@@ -50,7 +57,8 @@ class Replay:
       self.directory = None
     self.save_wait = save_wait
 
-    self.metrics = {'samples': 0, 'inserts': 0, 'updates': 0}
+    self.metrics = {
+        'samples': 0, 'inserts': 0, 'updates': 0, 'seqs': 0, 'rew_seqs': 0}
 
   def __len__(self):
     return len(self.items)
@@ -68,6 +76,8 @@ class Replay:
         'samples': m['samples'],
         'updates': m['updates'],
         'replay_ratio': ratio(self.length * m['samples'], m['inserts']),
+        # 学習に使った系列のうち、報酬を含むものの割合(優先度の効き具合の確認用)
+        'rew_seq_ratio': ratio(m['rew_seqs'], m['seqs']),
     }
     for key in self.metrics:
       self.metrics[key] = 0
@@ -123,6 +133,10 @@ class Replay:
     limiters.wait(lambda: len(self.sampler), message)
     seqs, is_online = zip(*[self._sample(mode) for _ in range(batch)])
     data = self._assemble_batch(seqs, 0, self.length)
+    if mode == 'train' and 'reward' in data:
+      # Increment is not thread safe thus inaccurate but faster than locking.
+      self.metrics['seqs'] += len(seqs)
+      self.metrics['rew_seqs'] += int((np.abs(data['reward']).sum(1) > 0).sum())
     data = self._annotate_batch(data, is_online, True)
     return data
 
@@ -174,7 +188,15 @@ class Replay:
     itemid = self.itemid
     self.itemid += 1
     self.items[itemid] = (chunkid, index)
-    stepids = self._getseq(chunkid, index, ['stepid'])['stepid']
+    keys = ['stepid']
+    if self.scorer is not None:
+      keys += ['reward'] + (['action'] if self.scorer.needs_action else [])
+    seq = self._getseq(chunkid, index, keys)
+    stepids = seq['stepid']
+    if self.scorer is not None:
+      # 優先度は、この窓の報酬(と行動)から、追加の時点で決める。
+      self.sampler.set_priority(itemid, self.scorer.priority(
+          seq['reward'], seq['action'] if self.scorer.needs_action else None))
     self.sampler[itemid] = stepids
     self.fifo.append(itemid)
 
