@@ -104,7 +104,7 @@ class Head(nj.Module):
     assert (classes == classes[0]).all(), classes
     shape = (*self.space.shape, classes[0].item())
     logits = self.sub('logits', nets.Linear, shape, **self.kw)(x)
-    output = outs.Categorical(logits)
+    output = outs.Categorical(logits, self.unimix)
     output.minent = 0
     output.maxent = np.log(logits.shape[-1])
     return output
