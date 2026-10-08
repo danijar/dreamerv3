@@ -57,7 +57,7 @@ def _start_server(port, replicas):
         decision = False
       elif every < 0:
         decision = True
-      elif now >= prev + every:
+      elif now >= prev + every and not any(skips):
         clocks[clockid][1] = now
         decision = True
       else:
