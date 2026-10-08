@@ -8,7 +8,8 @@ import numpy as np
 
 class FromGym(embodied.Env):
 
-  def __init__(self, env, obs_key='image', act_key='action', **kwargs):
+  def __init__(
+      self, env, obs_key='image', act_key='action', info_keys=(), **kwargs):
     if isinstance(env, str):
       self._env = gym.make(env, **kwargs)
     else:
@@ -18,6 +19,7 @@ class FromGym(embodied.Env):
     self._act_dict = hasattr(self._env.action_space, 'spaces')
     self._obs_key = obs_key
     self._act_key = act_key
+    self._info_keys = tuple(info_keys)
     self._done = True
     self._info = None
 
@@ -42,6 +44,8 @@ class FromGym(embodied.Env):
         'is_first': elements.Space(bool),
         'is_last': elements.Space(bool),
         'is_terminal': elements.Space(bool),
+        **{f'log/info/{k}': elements.Space(np.float32)
+           for k in self._info_keys},
     }
 
   @functools.cached_property
@@ -57,6 +61,7 @@ class FromGym(embodied.Env):
   def step(self, action):
     if action['reset'] or self._done:
       self._done = False
+      self._info = None
       obs = self._env.reset()
       return self._obs(obs, 0.0, is_first=True)
     if self._act_dict:
@@ -80,6 +85,17 @@ class FromGym(embodied.Env):
         is_first=is_first,
         is_last=is_last,
         is_terminal=is_terminal)
+    # Surface selected entries of the environment info dict. The 'log/' prefix
+    # is the convention for values that are recorded as episode metrics and not
+    # consumed by the agent, so they can be logged without touching the model.
+    info = self._info or {}
+    for key in self._info_keys:
+      if key in info:
+        obs[f'log/info/{key}'] = np.float32(info[key])
+      else:
+        # Environments that use the old gym reset() have no info dict yet.
+        assert is_first, (key, sorted(info.keys()))
+        obs[f'log/info/{key}'] = np.float32(0.0)
     return obs
 
   def render(self):
