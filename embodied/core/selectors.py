@@ -211,6 +211,12 @@ class Mixture:
     self.fractions = np.array([fractions[key] for key in keys], np.float32)
     self.rng = np.random.default_rng(seed)
 
+  def __len__(self):
+    # Every selector is notified of every step, so they all hold the same
+    # number of items. `Replay.sample()` waits on this to know when the buffer
+    # holds something it can return.
+    return max(len(x) for x in self.selectors)
+
   def __call__(self):
     return self.rng.choice(self.selectors, p=self.fractions)()
 

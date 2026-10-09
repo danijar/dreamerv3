@@ -22,7 +22,10 @@ class Replay:
     self.chunksize = chunksize
     self.name = name
 
-    self.sampler = selector or selectors.Uniform(seed)
+    # Test against None, not truthiness: a selector that defines `__len__`
+    # (such as `selectors.Mixture`) is falsy while it is still empty and would
+    # otherwise be silently replaced by a uniform sampler.
+    self.sampler = selector if selector is not None else selectors.Uniform(seed)
 
     self.chunks = {}
     self.refs = {}
