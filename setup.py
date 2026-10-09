@@ -18,7 +18,12 @@ setuptools.setup(
     url='http://github.com/danijar/dreamerv3',
     long_description=pathlib.Path('README.md').read_text(),
     long_description_content_type='text/markdown',
-    packages=setuptools.find_packages(),
+    # `embodied/envs` and `embodied/perf` have no `__init__.py`, so
+    # `find_packages()` skips them and `from . import envs` in
+    # `embodied/__init__.py` fails for anyone installing the package.
+    packages=setuptools.find_namespace_packages(
+        include=['embodied*', 'dreamerv3*']),
+    package_data={'dreamerv3': ['configs.yaml']},
     include_package_data=True,
     install_requires=parse_reqs('requirements.txt'),
     classifiers=[
