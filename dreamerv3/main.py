@@ -190,9 +190,10 @@ def make_replay(config, folder, mode='train'):
   directory = elements.Path(config.logdir) / folder
   if config.replicas > 1:
     directory /= f'{config.replica:05}'
+  seed = [config.seed, config.replica]
   kwargs = dict(
       length=length, capacity=int(capacity), online=config.replay.online,
-      chunksize=config.replay.chunksize, directory=directory)
+      chunksize=config.replay.chunksize, directory=directory, seed=seed)
 
   if config.replay.fracs.uniform < 1 and mode == 'train':
     assert config.jax.compute_dtype in ('bfloat16', 'float32'), (
@@ -201,10 +202,12 @@ def make_replay(config, folder, mode='train'):
     recency = 1.0 / np.arange(1, capacity + 1) ** config.replay.recexp
     selectors = embodied.replay.selectors
     kwargs['selector'] = selectors.Mixture(dict(
-        uniform=selectors.Uniform(),
-        priority=selectors.Prioritized(**config.replay.prio),
-        recency=selectors.Recency(recency),
-    ), config.replay.fracs)
+        uniform=selectors.Uniform(seed=[config.seed, config.replica, 0]),
+        priority=selectors.Prioritized(
+            **config.replay.prio, seed=[config.seed, config.replica, 1]),
+        recency=selectors.Recency(
+            recency, seed=[config.seed, config.replica, 2]),
+    ), config.replay.fracs, seed=[config.seed, config.replica, 3])
 
   return embodied.replay.Replay(**kwargs)
 
