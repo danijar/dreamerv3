@@ -295,10 +295,9 @@ class TwoHot(Output):
       p1 = self.probs[..., :m]
       p2 = self.probs[..., m: m + 1]
       p3 = self.probs[..., m + 1:]
-      b1 = self.bins[..., :m]
       b2 = self.bins[..., m: m + 1]
       b3 = self.bins[..., m + 1:]
-      wavg = (p2 * b2).sum(-1) + ((p1 * b1)[..., ::-1] + (p3 * b3)).sum(-1)
+      wavg = (p2 * b2).sum(-1) + ((p3 - p1[..., ::-1]) * b3).sum(-1)
       return self.unsquash(wavg)
     else:
       p1 = self.probs[..., :n // 2]
