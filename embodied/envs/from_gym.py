@@ -2,8 +2,12 @@ import functools
 
 import elements
 import embodied
-import gym
 import numpy as np
+
+try:
+  import gymnasium as gym
+except ImportError:
+  import gym
 
 
 class FromGym(embodied.Env):
@@ -58,16 +62,26 @@ class FromGym(embodied.Env):
     if action['reset'] or self._done:
       self._done = False
       obs = self._env.reset()
+      if isinstance(obs, tuple) and len(obs) == 2 and isinstance(obs[1], dict):
+        obs, self._info = obs
       return self._obs(obs, 0.0, is_first=True)
     if self._act_dict:
-      action = self._unflatten(action)
+      act = {k: v for k, v in action.items() if k != 'reset'}
+      act = self._unflatten(act)
     else:
-      action = action[self._act_key]
-    obs, reward, self._done, self._info = self._env.step(action)
+      act = action[self._act_key]
+    result = self._env.step(act)
+    if len(result) == 5:
+      obs, reward, terminated, truncated, self._info = result
+      self._done = bool(terminated or truncated)
+      is_terminal = bool(self._info.get('is_terminal', terminated))
+    else:
+      obs, reward, self._done, self._info = result
+      is_terminal = bool(self._info.get('is_terminal', self._done))
     return self._obs(
         obs, reward,
         is_last=bool(self._done),
-        is_terminal=bool(self._info.get('is_terminal', self._done)))
+        is_terminal=is_terminal)
 
   def _obs(
       self, obs, reward, is_first=False, is_last=False, is_terminal=False):
@@ -83,7 +97,10 @@ class FromGym(embodied.Env):
     return obs
 
   def render(self):
-    image = self._env.render('rgb_array')
+    try:
+      image = self._env.render()
+    except TypeError:
+      image = self._env.render('rgb_array')
     assert image is not None
     return image
 

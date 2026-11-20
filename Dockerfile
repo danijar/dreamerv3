@@ -28,7 +28,7 @@ RUN pip install -U pip setuptools
 # the lab repo still uses, so pin Bazel 7 to keep the build working.
 ENV USE_BAZEL_VERSION=7.4.1
 RUN wget -O - https://gist.githubusercontent.com/danijar/ca6ab917188d2e081a8253b3ca5c36d3/raw/install-dmlab.sh | sh
-RUN pip install ale_py==0.9.0 autorom[accept-rom-license]==0.6.1
+RUN pip install "ale-py>=0.10.0"
 RUN pip install procgen_mirror
 RUN pip install crafter
 RUN pip install dm_control
@@ -39,7 +39,7 @@ RUN pip install https://github.com/danijar/minerl/releases/download/v0.4.4-patch
 RUN chown -R 1000:root /venv/lib/python3.11/site-packages/minerl
 
 # Requirements
-RUN pip install jax[cuda]==0.5.0
+RUN pip install "jax[cuda12]>=0.5.0"
 COPY requirements.txt requirements.txt
 RUN pip install -r requirements.txt
 
