@@ -473,10 +473,9 @@ class Agent(embodied.Agent):
     return '\n'.join(lines)
 
   def _zeros(self, spaces, batch_shape):
-    data = {k: np.zeros(v.shape, v.dtype) for k, v in spaces.items()}
-    for dim in reversed(batch_shape):
-      data = {k: np.repeat(v[None], dim, axis=0) for k, v in data.items()}
-    return data
+    return {
+        k: np.zeros((*batch_shape, *v.shape), v.dtype)
+        for k, v in spaces.items()}
 
   def _format_jit_stats(self, compiled):
     try:

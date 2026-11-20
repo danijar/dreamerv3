@@ -277,10 +277,17 @@ class TwoHot(Output):
     assert logits.shape[-1] == len(bins), (logits.shape, len(bins))
     assert bins.dtype == f32, bins.dtype
     self.logits = logits
-    self.probs = jax.nn.softmax(logits)
-    self.bins = jnp.array(bins)
+    self._probs = None
+    self._log_pred = None
+    self.bins = jnp.asarray(bins)
     self.squash = squash or (lambda x: x)
     self.unsquash = unsquash or (lambda x: x)
+
+  @property
+  def probs(self):
+    if self._probs is None:
+      self._probs = jax.nn.softmax(self.logits)
+    return self._probs
 
   def pred(self):
     # The naive implementation results in a non-zero result even if the bins
@@ -325,6 +332,6 @@ class TwoHot(Output):
     target = (
         jax.nn.one_hot(below, len(self.bins)) * weight_below[..., None] +
         jax.nn.one_hot(above, len(self.bins)) * weight_above[..., None])
-    log_pred = self.logits - jax.scipy.special.logsumexp(
-        self.logits, -1, keepdims=True)
-    return -(target * log_pred).sum(-1)
+    if self._log_pred is None:
+      self._log_pred = jax.nn.log_softmax(self.logits, -1)
+    return -(target * self._log_pred).sum(-1)
