@@ -51,6 +51,7 @@ class Replay:
     self.save_wait = save_wait
 
     self.metrics = {'samples': 0, 'inserts': 0, 'updates': 0}
+    self._needs_stepids = self._selector_needs_stepids(self.sampler)
 
   def __len__(self):
     return len(self.items)
@@ -148,6 +149,16 @@ class Replay:
         except KeyError:
           pass
 
+  @staticmethod
+  def _selector_needs_stepids(sampler):
+    if isinstance(sampler, (
+        selectors.Uniform, selectors.Recency, selectors.Fifo)):
+      return False
+    if isinstance(sampler, selectors.Mixture):
+      return any(
+          Replay._selector_needs_stepids(s) for s in sampler.selectors)
+    return True
+
   def _sample(self, mode):
     assert mode in ('train', 'report', 'eval'), mode
     if mode == 'train':
@@ -174,7 +185,9 @@ class Replay:
     itemid = self.itemid
     self.itemid += 1
     self.items[itemid] = (chunkid, index)
-    stepids = self._getseq(chunkid, index, ['stepid'])['stepid']
+    stepids = (
+        self._getseq(chunkid, index, ['stepid'])['stepid']
+        if self._needs_stepids else None)
     self.sampler[itemid] = stepids
     self.fifo.append(itemid)
 
@@ -195,18 +208,18 @@ class Replay:
     available = chunk.length - index
     if available >= self.length:
       with elements.timer.section('get_slice'):
-        seq = chunk.slice(index, self.length)
+        seq = chunk.slice(index, self.length, keys)
         if not concat:
           seq = {k: [v] for k, v in seq.items()}
         return seq
     else:
       with elements.timer.section('get_compose'):
-        parts = [chunk.slice(index, available)]
+        parts = [chunk.slice(index, available, keys)]
         remaining = self.length - available
         while remaining > 0:
           chunk = self.chunks[chunk.succ]
           used = min(remaining, chunk.length)
-          parts.append(chunk.slice(0, used))
+          parts.append(chunk.slice(0, used, keys))
           remaining -= used
         seq = {k: [p[k] for p in parts] for k in keys or parts[0].keys()}
         if concat:
@@ -286,9 +299,8 @@ class Replay:
         data['is_first'][:, 0] = True
       if 'is_last' in data:
         # Make sure that abandoned episodes have is_last set.
-        next_is_first = np.roll(data['is_first'], shift=-1, axis=1)
-        next_is_first[:, -1] = False
-        data['is_last'] = data['is_last'] | next_is_first
+        data['is_last'] = data['is_last'].copy()
+        data['is_last'][:, :-1] |= data['is_first'][:, 1:]
     return data
 
   @elements.timer.section('replay_save')

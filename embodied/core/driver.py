@@ -41,6 +41,7 @@ class Driver:
 
   def close(self):
     if self.parallel:
+      self.stop.set()
       [proc.kill() for proc in self.procs]
     else:
       [env.close() for env in self.envs]
@@ -106,7 +107,6 @@ class Driver:
       env = ctor()
       while not stop.is_set():
         if not pipe.poll(0.1):
-          time.sleep(0.1)
           continue
         try:
           msg, *args = pipe.recv()

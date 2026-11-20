@@ -198,13 +198,17 @@ def make_replay(config, folder, mode='train'):
     assert config.jax.compute_dtype in ('bfloat16', 'float32'), (
         'Gradient scaling for low-precision training can produce invalid loss '
         'outputs that are incompatible with prioritized replay.')
-    recency = 1.0 / np.arange(1, capacity + 1) ** config.replay.recexp
     selectors = embodied.replay.selectors
-    kwargs['selector'] = selectors.Mixture(dict(
-        uniform=selectors.Uniform(),
-        priority=selectors.Prioritized(**config.replay.prio),
-        recency=selectors.Recency(recency),
-    ), config.replay.fracs)
+    chs = {}
+    if config.replay.fracs.uniform > 0:
+      chs['uniform'] = selectors.Uniform()
+    if config.replay.fracs.priority > 0:
+      chs['priority'] = selectors.Prioritized(**config.replay.prio)
+    if config.replay.fracs.recency > 0:
+      recency = 1.0 / np.arange(1, capacity + 1) ** config.replay.recexp
+      chs['recency'] = selectors.Recency(recency)
+    fracs = {k: v for k, v in config.replay.fracs.items() if v > 0}
+    kwargs['selector'] = selectors.Mixture(chs, fracs)
 
   return embodied.replay.Replay(**kwargs)
 

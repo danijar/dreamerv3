@@ -57,9 +57,11 @@ class Chunk:
     for key, value in mapping.items():
       self.data[key][index: index + length] = value
 
-  def slice(self, index, length):
+  def slice(self, index, length, keys=None):
     assert 0 <= index and index + length <= self.length
-    return {k: v[index: index + length] for k, v in self.data.items()}
+    return {
+        k: self.data[k][index: index + length]
+        for k in (keys or self.data.keys())}
 
   @elements.timer.section('chunk_save')
   def save(self, directory, log=False):
