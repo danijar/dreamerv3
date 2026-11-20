@@ -142,7 +142,7 @@ def parallel_learner(agent, barrier, args):
   cp.agent = agent
   if args.from_checkpoint:
     elements.checkpoint.load(args.from_checkpoint, dict(
-        agent=bind(agent.load, regex=args.from_checkpoint_regex)))
+        agent=bind(agent.load, regex=getattr(args, 'from_checkpoint_regex', None))))
   cp.load_or_save()
   logger = portal.Client(args.logger_addr, 'LearnerLogger', maxinflight=1)
   updater = portal.Client(
@@ -331,6 +331,7 @@ def parallel_logger(make_logger, args):
 
   parallel = elements.Agg()
   epstats = elements.Agg()
+  eval_epstats = elements.Agg()
   episodes = collections.defaultdict(elements.Agg)
   updated = collections.defaultdict(lambda: None)
   dones = collections.defaultdict(lambda: True)
@@ -375,14 +376,15 @@ def parallel_logger(make_logger, args):
           episode.add(key + '/sum', value, agg='sum')
       if tran['is_last']:
         result = episode.result()
+        is_eval = bool(tran['is_eval'])
         logger.add({
             'score': result.pop('score'),
             'length': result.pop('length') - 1,
-        }, prefix='episode')
+        }, prefix='eval_episode' if is_eval else 'episode')
         rew = result.pop('rewards')
         if len(rew) > 1:
           result['reward_rate'] = (np.abs(rew[1:] - rew[:-1]) >= 0.01).mean()
-        epstats.add(result)
+        (eval_epstats if is_eval else epstats).add(result)
 
     for addr, last in list(updated.items()):
       if now - last >= args.episode_timeout:
@@ -403,6 +405,8 @@ def parallel_logger(make_logger, args):
         logger.add({'timer/logger': elements.timer.stats()['summary']})
         logger.add(parallel.result(), prefix='parallel')
         logger.add(epstats.result(), prefix='epstats')
+        if args.eval_envs:
+          logger.add(eval_epstats.result(), prefix='eval_epstats')
         logger.add(usage.stats(), prefix='usage/logger')
         logger.add(server.stats(), prefix='server/logger')
       if logger.step == last_step:

@@ -57,6 +57,7 @@ defaults:
     eval_eps: 1
     report_batches: 1
     from_checkpoint: ''
+    from_checkpoint_regex: ''
     episode_timeout: 180
     actor_addr: 'localhost:{auto}'
     replay_addr: 'localhost:{auto}'
