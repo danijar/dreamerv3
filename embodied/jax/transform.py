@@ -142,7 +142,7 @@ def create_layer_callback(mesh, partition_rules):
         sharding = jax.sharding.NamedSharding(mesh, spec)
         def apply(y):
           y = jax.lax.with_sharding_constraint(y, sharding)
-          if not hasattr(type(y), 'tracer_shardings'):
+          if not hasattr(type(y), 'tracer_sharding'):
             type(y).tracer_sharding = property(
                 lambda self: TRACER_SHARDINGS[id(self)])
           TRACER_SHARDINGS[id(y)] = sharding
