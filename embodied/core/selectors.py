@@ -49,7 +49,7 @@ class Uniform:
 
   def __delitem__(self, key):
     with self.lock:
-      assert 2 <= len(self), len(self)
+      assert 1 <= len(self), len(self)
       index = self.indices.pop(key)
       last = self.keys.pop()
       if index != len(self.keys):
@@ -67,6 +67,7 @@ class Recency:
     self.step = 0
     self.steps = {}
     self.items = {}
+    self.lock = threading.Lock()
 
   def __len__(self):
     return len(self.items)
@@ -74,10 +75,11 @@ class Recency:
   def __call__(self):
     for retry in range(10):
       try:
-        age = self._sample(self.tree, self.rng)
-        if len(self.items) < len(self.uprobs):
-          age = int(age / len(self.uprobs) * len(self.items))
-        return self.items[self.step - 1 - age]
+        with self.lock:
+          age = self._sample(self.tree, self.rng)
+          if len(self.items) < len(self.uprobs):
+            age = int(age / len(self.uprobs) * len(self.items))
+          return self.items[self.step - 1 - age]
       except KeyError:
         # Item might have been deleted very recently.
         if retry < 9:
@@ -87,13 +89,15 @@ class Recency:
           raise
 
   def __setitem__(self, key, stepids):
-    self.steps[key] = self.step
-    self.items[self.step] = key
-    self.step += 1
+    with self.lock:
+      self.steps[key] = self.step
+      self.items[self.step] = key
+      self.step += 1
 
   def __delitem__(self, key):
-    step = self.steps.pop(key)
-    del self.items[step]
+    with self.lock:
+      step = self.steps.pop(key)
+      del self.items[step]
 
   def _sample(self, tree, rng, bfactor=16):
     path = []
@@ -101,7 +105,7 @@ class Recency:
       p = prob
       for segment in path:
         p = p[segment]
-      index = rng.choice(len(segment), p=p)
+      index = rng.choice(len(p), p=p)
       path.append(index)
     index = sum(
         index * bfactor ** (len(tree) - level - 1)
@@ -111,7 +115,7 @@ class Recency:
   def _build(self, uprobs, bfactor=16):
     assert np.isfinite(uprobs).all(), uprobs
     assert (uprobs >= 0).all(), uprobs
-    depth = int(np.ceil(np.log(len(uprobs)) / np.log(bfactor)))
+    depth = max(1, int(np.ceil(np.log(len(uprobs)) / np.log(bfactor))))
     size = bfactor ** depth
     uprobs = np.concatenate([uprobs, np.zeros(size - len(uprobs))])
     tree = [uprobs]
@@ -139,50 +143,52 @@ class Prioritized:
     self.prios = collections.defaultdict(lambda: self.initial)
     self.stepitems = collections.defaultdict(list)
     self.items = {}
+    self.lock = threading.RLock()
 
   def prioritize(self, stepids, priorities):
+    if not len(stepids):
+      return
     if not isinstance(stepids[0], bytes):
       stepids = [x.tobytes() for x in stepids]
-    for stepid, priority in zip(stepids, priorities):
-      try:
-        self.prios[stepid] = priority
-      except KeyError:
-        print('Ignoring priority update for removed time step.')
-    items = []
-    for stepid in stepids:
-      items += self.stepitems[stepid]
-    for key in list(set(items)):
-      try:
-        self.tree.update(key, self._aggregate(key))
-      except KeyError:
-        print('Ignoring tree update for removed time step.')
+    with self.lock:
+      items = set()
+      for stepid, priority in zip(stepids, priorities):
+        if stepid in self.stepitems:
+          self.prios[stepid] = priority
+          items.update(self.stepitems[stepid])
+      for key in items:
+        if key in self.items:
+          self.tree.update(key, self._aggregate(key))
 
   def __len__(self):
     return len(self.items)
 
   def __call__(self):
-    key = self.tree.sample()
-    if self.zero_on_sample:
-      zeros = [0.0] * len(self.items[key])
-      self.prioritize(self.items[key], zeros)
-    return key
+    with self.lock:
+      key = self.tree.sample()
+      if self.zero_on_sample:
+        zeros = [0.0] * len(self.items[key])
+        self.prioritize(self.items[key], zeros)
+      return key
 
   def __setitem__(self, key, stepids):
     if not isinstance(stepids[0], bytes):
       stepids = [x.tobytes() for x in stepids]
-    self.items[key] = stepids
-    [self.stepitems[stepid].append(key) for stepid in stepids]
-    self.tree.insert(key, self._aggregate(key))
+    with self.lock:
+      self.items[key] = stepids
+      [self.stepitems[stepid].append(key) for stepid in stepids]
+      self.tree.insert(key, self._aggregate(key))
 
   def __delitem__(self, key):
-    self.tree.remove(key)
-    stepids = self.items.pop(key)
-    for stepid in stepids:
-      stepitems = self.stepitems[stepid]
-      stepitems.remove(key)
-      if not stepitems:
-        del self.stepitems[stepid]
-        del self.prios[stepid]
+    with self.lock:
+      self.tree.remove(key)
+      stepids = self.items.pop(key)
+      for stepid in stepids:
+        stepitems = self.stepitems[stepid]
+        stepitems.remove(key)
+        if not stepitems:
+          del self.stepitems[stepid]
+          self.prios.pop(stepid, None)
 
   def _aggregate(self, key):
     # Both list comprehensions in this function are a performance bottleneck
@@ -210,6 +216,9 @@ class Mixture:
     self.selectors = [selectors[key] for key in keys]
     self.fractions = np.array([fractions[key] for key in keys], np.float32)
     self.rng = np.random.default_rng(seed)
+
+  def __len__(self):
+    return len(self.selectors[0]) if self.selectors else 0
 
   def __call__(self):
     return self.rng.choice(self.selectors, p=self.fractions)()

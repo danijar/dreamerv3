@@ -143,11 +143,15 @@ class Consec(base.Stream):
     return {
         'source': self.source.save(),
         'index': self.index,
+        'current': self.current,
     }
 
   def load(self, data):
     self.source.load(data['source'])
     self.index = data['index']
+    self.current = data.get('current')
+    if self.index and self.current is None:
+      self.index = 0
 
 
 class Zip(base.Stream):
@@ -216,11 +220,12 @@ class Mixer(base.Stream):
 
   def __iter__(self):
     assert not self.started
+    self.started = True
     return self
 
   def __next__(self):
     assert self.started
-    rng = np.ranodm.default_rng(seed=[self.seed, self.step])
+    rng = np.random.default_rng(seed=[self.seed, self.step])
     self.step += 1
     index = rng.choice(len(self.keys), p=self.probs)
     return next(self.iterators[index])
