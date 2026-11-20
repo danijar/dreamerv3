@@ -49,7 +49,7 @@ class Climb(embodied.Wrapper):
 
   def step(self, action):
     obs = self.env.step(action)
-    x, y, z = obs['log/player_pos']
+    x, y, z = self.env.player_pos
     height = np.float32(y)
     if obs['is_first']:
       self._previous = height
@@ -193,6 +193,7 @@ class MinecraftBase(embodied.Env):
     from . import from_gym
     self._env = from_gym.FromGym(self._gymenv)
     self._inventory = {}
+    self._player_pos = np.zeros(3, np.float32)
 
     # Observations
     self._inv_keys = [
@@ -270,6 +271,10 @@ class MinecraftBase(embodied.Env):
   def inventory(self):
     return self._inventory
 
+  @property
+  def player_pos(self):
+    return self._player_pos
+
   def _reset(self):
     with self.LOCK:
       obs = self._env.step({'reset': True})
@@ -279,6 +284,7 @@ class MinecraftBase(embodied.Env):
     self._sticky_jump_counter = 0
     self._pitch = 0
     self._inventory = {}
+    self._player_pos = np.zeros(3, np.float32)
     return obs
 
   def _obs(self, obs):
@@ -294,9 +300,10 @@ class MinecraftBase(embodied.Env):
     index = self._equip_enum.index(obs['equipped_items/mainhand/type'])
     equipped = np.zeros(len(self._equip_enum), np.float32)
     equipped[index] = 1.0
-    # player_x = obs['location_stats/xpos']
-    # player_y = obs['location_stats/ypos']
-    # player_z = obs['location_stats/zpos']
+    player_x = obs['location_stats/xpos']
+    player_y = obs['location_stats/ypos']
+    player_z = obs['location_stats/zpos']
+    self._player_pos = np.array([player_x, player_y, player_z], np.float32)
     obs = {
         'image': obs['pov'],
         'inventory': inventory,

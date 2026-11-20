@@ -16,7 +16,7 @@ class DMLab(embodied.Env):
       self, level, repeat=4, size=(64, 64), mode='train',
       actions='popart', episodic=True, text=None, seed=None):
     if level == 'goals':  # Shortcut for convenience
-      level = 'dmlab_explore_goal_locations_small'
+      level = 'explore_goal_locations_small'
     self._size = size
     self._repeat = repeat
     self._actions = {
@@ -100,11 +100,10 @@ class DMLab(embodied.Env):
 
   def _embed(self, text):
     tokens = self.TOKENIZER.findall(text.lower())
-    indices = [self._hash(token) for token in tokens]
+    indices = [self._hash(token) for token in tokens[:self._instr_length]]
     # print('EMBED', text, '->', tokens, '->', indices)
     indices = indices + [0] * (self._instr_length - len(indices))
-    embeddings = [self._embeddings[i] for i in indices]
-    return np.concatenate(embeddings)
+    return self._embeddings[indices].reshape(-1)
 
   @functools.cache
   def _hash(self, token):

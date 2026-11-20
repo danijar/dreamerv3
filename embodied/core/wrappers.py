@@ -303,7 +303,7 @@ class ResizeImage(Wrapper):
 
   @functools.cached_property
   def obs_space(self):
-    spaces = self.env.obs_space
+    spaces = self.env.obs_space.copy()
     for key in self._keys:
       shape = self._size + spaces[key].shape[2:]
       spaces[key] = elements.Space(np.uint8, shape)
@@ -317,7 +317,7 @@ class ResizeImage(Wrapper):
 
   def _resize(self, image):
     image = self._Image.fromarray(image)
-    image = image.resize(self._size, self._Image.NEAREST)
+    image = image.resize((self._size[1], self._size[0]), self._Image.NEAREST)
     image = np.array(image)
     return image
 
