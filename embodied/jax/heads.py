@@ -104,9 +104,16 @@ class Head(nj.Module):
     assert (classes == classes[0]).all(), classes
     shape = (*self.space.shape, classes[0].item())
     logits = self.sub('logits', nets.Linear, shape, **self.kw)(x)
-    output = outs.Categorical(logits)
-    output.minent = 0
-    output.maxent = np.log(logits.shape[-1])
+    output = outs.Categorical(logits, self.unimix)
+    n = logits.shape[-1]
+    if self.unimix and n > 1:
+      p0 = 1 - self.unimix + self.unimix / n
+      p1 = self.unimix / n
+      minent = -(p0 * np.log(p0) + (n - 1) * p1 * np.log(p1))
+    else:
+      minent = 0.0
+    output.minent = jnp.full(self.space.shape, minent, f32)
+    output.maxent = jnp.full(self.space.shape, np.log(n), f32)
     return output
 
   def onehot(self, x):
@@ -138,7 +145,8 @@ class Head(nj.Module):
       half = nets.symexp(half)
       bins = jnp.concatenate([half, -half[:-1][::-1]], 0)
     else:
-      half = jnp.linspace(-20, 0, self.bins // 2, dtype=f32)
+      assert self.bins >= 2, self.bins
+      half = jnp.linspace(-20, -20 / (self.bins - 1), self.bins // 2, dtype=f32)
       half = nets.symexp(half)
       bins = jnp.concatenate([half, -half[::-1]], 0)
     return outs.TwoHot(logits, bins)
@@ -150,8 +158,9 @@ class Head(nj.Module):
     lo, hi = self.minstd, self.maxstd
     stddev = (hi - lo) * jax.nn.sigmoid(stddev + 2.0) + lo
     output = outs.Normal(jnp.tanh(mean), stddev)
-    output.minent = outs.Normal(jnp.zeros_like(mean), self.minstd).entropy()
-    output.maxent = outs.Normal(jnp.zeros_like(mean), self.maxstd).entropy()
+    zeros = jnp.zeros(self.space.shape, f32)
+    output.minent = outs.Normal(zeros, self.minstd).entropy()
+    output.maxent = outs.Normal(zeros, self.maxstd).entropy()
     return output
 
   def normal_logstd(self, x):

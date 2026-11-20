@@ -43,6 +43,10 @@ class Agg(Output):
     self.output = output
     self.axes = [-i for i in range(1, dims + 1)]
     self.agg = agg
+    if hasattr(output, 'minent'):
+      self.minent = self.agg(jnp.asarray(output.minent), self.axes)
+    if hasattr(output, 'maxent'):
+      self.maxent = self.agg(jnp.asarray(output.maxent), self.axes)
 
   def __repr__(self):
     name = type(self.output).__name__
@@ -64,7 +68,7 @@ class Agg(Output):
     return self.output.logp(event).sum(self.axes)
 
   def prob(self, event):
-    return self.output.prob(event).sum(self.axes)
+    return self.output.prob(event).prod(self.axes)
 
   def entropy(self):
     entropy = self.output.entropy()
@@ -202,7 +206,7 @@ class Binary(Output):
 
   def sample(self, seed, shape=()):
     prob = jax.nn.sigmoid(self.logit)
-    return jax.random.bernoulli(seed, prob, -1, shape + self.logit.shape)
+    return jax.random.bernoulli(seed, prob, shape + self.logit.shape)
 
 
 class Categorical(Output):
