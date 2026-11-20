@@ -286,7 +286,7 @@ class Decoder(nj.Module):
     return {}
 
   def __call__(self, carry, feat, reset, training, single=False):
-    assert feat['deter'].shape[-1] % self.bspace == 0
+    assert not self.bspace or feat['deter'].shape[-1] % self.bspace == 0
     K = self.kernel
     recons = {}
     bshape = reset.shape
@@ -326,7 +326,7 @@ class Decoder(nj.Module):
         x1 = self.sub('sp2', nn.Linear, shape, **self.kw)(x1)
         x = nn.act(self.act)(self.sub('spnorm', nn.Norm, self.norm)(x0 + x1))
       else:
-        x = self.sub('space', nn.Linear, shape, **kw)(inp)
+        x = self.sub('space', nn.Linear, shape, **self.kw)(inp)
         x = nn.act(self.act)(self.sub('spacenorm', nn.Norm, self.norm)(x))
       for i, depth in reversed(list(enumerate(self.depths[:-1]))):
         if self.strided:
