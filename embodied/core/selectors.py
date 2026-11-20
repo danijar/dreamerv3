@@ -292,17 +292,42 @@ class SampleTree:
   def sample(self):
     node = self.root
     while isinstance(node, SampleTreeNode):
-      uprobs = np.array([x.uprob for x in node.children])
-      total = uprobs.sum()
-      if not np.isfinite(total):
-        finite = np.isinf(uprobs)
-        probs = finite / finite.sum()
-      elif total == 0:
-        probs = np.ones(len(uprobs)) / len(uprobs)
+      children = node.children
+      if len(children) == 1:
+        node = children[0]
+        continue
+      total = node.uprob
+      if not np.isfinite(total) or total <= 0:
+        uprobs = np.array([x.uprob for x in children], dtype=np.float64)
+        total = uprobs.sum()
+        if not np.isfinite(total):
+          finite = np.isinf(uprobs)
+          probs = finite / finite.sum()
+          node = children[int(self.rng.choice(len(uprobs), p=probs))]
+        elif total <= 0:
+          node = children[int(self.rng.integers(0, len(children)))]
+        else:
+          probs = uprobs / total
+          node = children[int(self.rng.choice(len(uprobs), p=probs))]
       else:
-        probs = uprobs / total
-      choice = self.rng.choice(np.arange(len(uprobs)), p=probs)
-      node = node.children[choice.item()]
+        target = self.rng.random() * total
+        acc = 0.0
+        chosen = None
+        last_pos = None
+        for child in children:
+          uprob = child.uprob
+          if uprob > 0:
+            last_pos = child
+            acc += uprob
+            if target < acc:
+              chosen = child
+              break
+        if chosen is not None:
+          node = chosen
+        elif last_pos is not None:
+          node = last_pos
+        else:
+          node = children[int(self.rng.integers(0, len(children)))]
     return node.key
 
 
