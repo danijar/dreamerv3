@@ -22,7 +22,7 @@ class Replay:
     self.chunksize = chunksize
     self.name = name
 
-    self.sampler = selector or selectors.Uniform(seed)
+    self.sampler = selectors.Uniform(seed) if selector is None else selector
 
     self.chunks = {}
     self.refs = {}
@@ -184,11 +184,13 @@ class Replay:
     chunkid, index = self.items.pop(itemid)
     with self.refs_lock:
       self.refs[chunkid] -= 1
-      if self.refs[chunkid] < 1:
+      while self.refs[chunkid] < 1:
         del self.refs[chunkid]
         chunk = self.chunks.pop(chunkid)
-        if chunk.succ in self.refs:
-          self.refs[chunk.succ] -= 1
+        if chunk.succ not in self.refs:
+          break
+        chunkid = chunk.succ
+        self.refs[chunkid] -= 1
 
   def _getseq(self, chunkid, index, keys=None, concat=True):
     chunk = self.chunks[chunkid]
@@ -315,13 +317,13 @@ class Replay:
     amount = amount or self.capacity or np.inf
     if not directory:
       return
-    revsorted = lambda x: list(reversed(sorted(list(x))))
     directory = elements.Path(directory)
-    names_loaded = revsorted(x.filename for x in list(self.chunks.values()))
-    names_ondisk = revsorted(x.name for x in directory.glob('*.npz'))
-    names_ondisk = [x for x in names_ondisk if x not in names_loaded]
+    names_loaded = [x.filename for x in list(self.chunks.values())]
+    names_ondisk = [x.name for x in directory.glob('*.npz')]
+    names_ondisk = [x for x in names_ondisk if x not in set(names_loaded)]
     if not names_ondisk:
       return
+    names_ondisk = self._sort_chunks(names_ondisk)
 
     numitems = self._numitems(names_loaded + names_ondisk)
     uuids = [elements.UUID(x.split('-')[1]) for x in names_ondisk]
@@ -341,8 +343,8 @@ class Replay:
 
     # We need to recompute the number of items per chunk now because some
     # chunks may be corrupted and thus not available.
-    # numitems = self._numitems(chunks + list(self.chunks.values()))
-    numitems = self._numitems(chunks)
+    chunks = self._sort_chunks(chunks)
+    numitems = self._numitems(chunks + list(self.chunks.values()))
 
     with self.rwlock.writing:
       self.saved.update([chunk.uuid for chunk in chunks])
@@ -369,22 +371,57 @@ class Replay:
     chunk.succ = succ.uuid
     return succ
 
+  def _sort_chunks(self, chunks):
+    keyfn = lambda x: x.filename if hasattr(x, 'filename') else str(x)
+    chunks = sorted(chunks, key=keyfn, reverse=True)
+    by_uuid = {}
+    succ_map = {}
+    order = []
+    for chunk in chunks:
+      stem = elements.Path(keyfn(chunk)).stem
+      _, uuid, succ, _ = stem.split('-')
+      uuid, succ = elements.UUID(uuid), elements.UUID(succ)
+      by_uuid[uuid] = chunk
+      succ_map[uuid] = succ
+      order.append(uuid)
+    visited = set()
+    result = []
+    for uuid in order:
+      chain = []
+      curr = uuid
+      while curr in by_uuid and curr not in visited:
+        visited.add(curr)
+        chain.append(curr)
+        curr = succ_map[curr]
+      for node in reversed(chain):
+        result.append(by_uuid[node])
+    return result
+
   def _numitems(self, chunks):
     chunks = [x.filename if hasattr(x, 'filename') else x for x in chunks]
     if not chunks:
-      return 0
-    chunks = list(reversed(sorted([elements.Path(x).stem for x in chunks])))
-    times, uuids, succs, lengths = zip(*[x.split('-') for x in chunks])
+      return {}
+    stems = [elements.Path(x).stem for x in chunks]
+    _, uuids, succs, lengths = zip(*[x.split('-') for x in stems])
     uuids = [elements.UUID(x) for x in uuids]
-    succs = [elements.UUID(x) for x in succs]
+    succ_map = {u: elements.UUID(s) for u, s in zip(uuids, succs)}
     lengths = {k: int(v) for k, v in zip(uuids, lengths)}
     future = {}
-    for uuid, succ in zip(uuids, succs):
-      future[uuid] = lengths[uuid] + future.get(succ, 0)
+    for uuid in uuids:
+      chain = []
+      curr = uuid
+      while curr in lengths and curr not in future:
+        chain.append(curr)
+        curr = succ_map[curr]
+      acc = future.get(curr, 0)
+      for node in reversed(chain):
+        acc += lengths[node]
+        future[node] = acc
     numitems = {}
-    for uuid, succ in zip(uuids, succs):
+    for uuid in uuids:
+      succ = succ_map[uuid]
       numitems[uuid] = lengths[uuid] + 1 - self.length + future.get(succ, 0)
-    numitems = {k: np.clip(v, 0, lengths[k]) for k, v in numitems.items()}
+    numitems = {k: int(np.clip(v, 0, lengths[k])) for k, v in numitems.items()}
     return numitems
 
   def _notempty(self, reason=False):
