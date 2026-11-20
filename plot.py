@@ -358,7 +358,7 @@ def natfmt(x):
     x, suffix = x / 1e6, 'M'
   elif 1e9 <= abs(x):
     x, suffix = x / 1e9, 'B'
-  if abs(x) <= 1:
+  if abs(x) < 1:
     return f'{x:.3f}{suffix}'
   elif 1 <= abs(x) < 10:
     return f'{x:.1f}{suffix}'
@@ -385,7 +385,6 @@ def main(args):
   print_summary(df)
   if args.todf:
     assert args.todf.endswith('.json.gz')
-    import ipdb; ipdb.set_trace()
     df.to_json(args.todf, orient='records')
     print(f'Saved {args.todf}')
   stats = comp_stats(df, args)

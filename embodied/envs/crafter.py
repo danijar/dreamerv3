@@ -87,7 +87,5 @@ class Crafter(embodied.Env):
         **{f'achievement_{k}': v for k, v in info['achievements'].items()},
     }
     filename = self._logdir / 'stats.jsonl'
-    lines = filename.read() if filename.exists() else ''
-    lines += json.dumps(stats) + '\n'
-    filename.write(lines, mode='w')
+    filename.write(json.dumps(stats) + '\n', mode='a')
     print(f'Wrote stats: {filename}')

@@ -159,10 +159,11 @@ class Atari(embodied.Env):
       image = np.mean(self.buffers, 0).astype(np.uint8)
     if self.resize == 'opencv':
       import cv2
-      image = cv2.resize(image, self.size, interpolation=cv2.INTER_AREA)
+      image = cv2.resize(
+          image, (self.size[1], self.size[0]), interpolation=cv2.INTER_AREA)
     elif self.resize == 'pillow':
       image = Image.fromarray(image)
-      image = image.resize(self.size, Image.BILINEAR)
+      image = image.resize((self.size[1], self.size[0]), Image.BILINEAR)
       image = np.array(image)
     if self.gray:
       # Averaging channels equally would not work. For example, a fully red
@@ -173,5 +174,5 @@ class Atari(embodied.Env):
         reward=np.float32(reward),
         is_first=is_first,
         is_last=is_last,
-        is_terminal=is_last,
+        is_terminal=is_terminal,
     )

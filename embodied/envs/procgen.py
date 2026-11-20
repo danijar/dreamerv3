@@ -56,7 +56,8 @@ class ProcGen(embodied.Env):
   def _resize(self, image, size, method):
     if method == 'opencv':
       import cv2
-      image = cv2.resize(image, size, interpolation=cv2.INTER_AREA)
+      image = cv2.resize(
+          image, (size[1], size[0]), interpolation=cv2.INTER_AREA)
       return image
     elif method == 'pillow':
       image = Image.fromarray(image)
