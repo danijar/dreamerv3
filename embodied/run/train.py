@@ -86,7 +86,7 @@ def train(make_agent, make_replay, make_env, make_stream, make_logger, args):
   cp.replay = replay
   if args.from_checkpoint:
     elements.checkpoint.load(args.from_checkpoint, dict(
-        agent=bind(agent.load, regex=args.from_checkpoint_regex)))
+        agent=bind(agent.load, regex=getattr(args, 'from_checkpoint_regex', None))))
   cp.load_or_save()
 
   print('Start training loop')

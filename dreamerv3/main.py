@@ -37,7 +37,7 @@ def main(argv=None):
   logdir = elements.Path(config.logdir)
   print('Logdir:', logdir)
   print('Run script:', config.script)
-  if not config.script.endswith(('_env', '_replay')):
+  if not config.script.endswith(('_env', '_envs', '_replay')):
     logdir.mkdir()
     config.save(logdir / 'config.yaml')
 
@@ -109,7 +109,6 @@ def main(argv=None):
         bind(make_env, config), config.replica, args, is_eval)
 
   elif config.script == 'parallel_envs':
-    is_eval = config.replica >= args.envs
     embodied.run.parallel.parallel_envs(
         bind(make_env, config), bind(make_env, config), args)
 
@@ -217,7 +216,7 @@ def make_env(config, index, **overrides):
   ctor = {
       'dummy': 'embodied.envs.dummy:Dummy',
       'gym': 'embodied.envs.from_gym:FromGym',
-      'dm': 'embodied.envs.from_dmenv:FromDM',
+      'dm': 'embodied.envs.from_dm:FromDM',
       'crafter': 'embodied.envs.crafter:Crafter',
       'dmc': 'embodied.envs.dmc:DMC',
       'atari': 'embodied.envs.atari:Atari',
@@ -236,10 +235,11 @@ def make_env(config, index, **overrides):
     module, cls = ctor.split(':')
     module = importlib.import_module(module)
     ctor = getattr(module, cls)
-  kwargs = config.env.get(suite, {})
+  kwargs = dict(config.env.get(suite, {}))
   kwargs.update(overrides)
   if kwargs.pop('use_seed', False):
-    kwargs['seed'] = hash((config.seed, index)) % (2 ** 32 - 1)
+    seed_seq = np.random.SeedSequence([int(config.seed), int(index)])
+    kwargs['seed'] = int(seed_seq.generate_state(1)[0]) % (2 ** 32 - 1)
   if kwargs.pop('use_logdir', False):
     kwargs['logdir'] = elements.Path(config.logdir) / f'env{index}'
   env = ctor(task, **kwargs)
