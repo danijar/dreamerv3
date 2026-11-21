@@ -63,6 +63,7 @@ def main(argv=None):
       consec_train=config.consec_train,
       consec_report=config.consec_report,
       replay_context=config.replay_context,
+      seed=config.seed,
   )
 
   if config.script == 'train':
@@ -120,17 +121,30 @@ def main(argv=None):
         bind(make_stream, config),
         args)
 
+  elif config.script == 'train_mjx':
+    if config.jax.platform:
+      import jax
+      jax.config.update('jax_platforms', config.jax.platform)
+    embodied.run.train_mjx(
+        bind(make_agent, config),
+        bind(make_replay, config, 'replay'),
+        bind(make_mjx_env, config),
+        bind(make_stream, config),
+        bind(make_logger, config),
+        args)
+
   else:
     raise NotImplementedError(config.script)
 
 
-def make_agent(config):
+def make_agent(config, obs_space=None, act_space=None):
   from .agent import Agent
-  env = make_env(config, 0)
-  notlog = lambda k: not k.startswith('log/')
-  obs_space = {k: v for k, v in env.obs_space.items() if notlog(k)}
-  act_space = {k: v for k, v in env.act_space.items() if k != 'reset'}
-  env.close()
+  if obs_space is None or act_space is None:
+    env = make_env(config, 0)
+    notlog = lambda k: not k.startswith('log/')
+    obs_space = {k: v for k, v in env.obs_space.items() if notlog(k)}
+    act_space = {k: v for k, v in env.act_space.items() if k != 'reset'}
+    env.close()
   if config.random_agent:
     return embodied.RandomAgent(obs_space, act_space)
   cpdir = elements.Path(config.logdir)
@@ -229,6 +243,7 @@ def make_env(config, index, **overrides):
       'langroom': 'embodied.envs.langroom:LangRoom',
       'procgen': 'embodied.envs.procgen:ProcGen',
       'bsuite': 'embodied.envs.bsuite:BSuite',
+      'myosuite': 'embodied.envs.myosuite:MyoSuite',
       'memmaze': lambda task, **kw: from_gym.FromGym(
           f'MemoryMaze-{task}-v0', **kw),
   }[suite]
@@ -256,6 +271,30 @@ def wrap_env(env, config):
     if not space.discrete:
       env = embodied.wrappers.ClipAction(env, name)
   return env
+
+
+def make_mjx_env(config):
+  suite, task = config.task.split('_', 1)
+  overrides = dict(config.env.get(suite, {}))
+  overrides['num_envs'] = int(config.run.envs)
+  if suite == 'myomjx':
+    from embodied.envs.myosuite import _import_myosuite
+    _import_myosuite()
+    try:
+      from myosuite.envs.myo.backends import mjx as myo_mjx
+      cfg = myo_mjx.get_default_config(task)
+      if hasattr(cfg, 'mjx_impl') and 'impl' in overrides:
+        impl = overrides.pop('impl')
+        overrides['mjx_impl'] = None if impl in ('jax', '', None) else impl
+      return myo_mjx.make(task, config_overrides=overrides)
+    except ImportError:
+      from myosuite.envs.myo.mjx import make as mjx_make
+      return mjx_make(task, config_overrides=overrides)
+  elif suite == 'playground':
+    from mujoco_playground import registry
+    return registry.load(task, config_overrides=overrides)
+  else:
+    raise NotImplementedError(suite)
 
 
 def make_stream(config, replay, mode):
