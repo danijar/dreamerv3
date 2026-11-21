@@ -18,7 +18,7 @@ setuptools.setup(
     url='http://github.com/danijar/dreamerv3',
     long_description=pathlib.Path('README.md').read_text(encoding='utf-8'),
     long_description_content_type='text/markdown',
-    python_requires='>=3.11',
+    python_requires='>=3.10',
     packages=setuptools.find_namespace_packages(
         include=['dreamerv3*', 'embodied*']),
     include_package_data=True,
@@ -31,6 +31,7 @@ setuptools.setup(
         'Intended Audience :: Science/Research',
         'License :: OSI Approved :: MIT License',
         'Programming Language :: Python :: 3',
+        'Programming Language :: Python :: 3.10',
         'Programming Language :: Python :: 3.11',
         'Programming Language :: Python :: 3.12',
         'Programming Language :: Python :: 3.13',
