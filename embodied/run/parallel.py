@@ -42,7 +42,8 @@ def combined(
     workers.append(portal.Process(parallel_agent, make_agent, args))
   else:
     workers.append(portal.Thread(parallel_agent, make_agent, args))
-  workers.append(portal.Process(parallel_logger, make_logger, args))
+  logger_worker = portal.Process(parallel_logger, make_logger, args)
+  workers.append(logger_worker)
 
   if not args.remote_envs:
     for i in range(args.envs):
@@ -56,7 +57,24 @@ def combined(
         parallel_replay, make_replay_train, make_replay_eval,
         make_stream, args))
 
-  portal.run(workers)
+  [None if x.started else x.start() for x in workers]
+  start = time.time()
+  while True:
+    time.sleep(0.1)
+    if args.duration and time.time() - start >= args.duration:
+      print(f'Shutting down workers after {args.duration} seconds.')
+      [x.kill() for x in workers]
+      return
+    if logger_worker.exitcode == 0 or all(x.exitcode == 0 for x in workers):
+      print('Reached target steps; shutting down parallel workers.')
+      [x.kill() for x in workers]
+      return
+    errored = [x for x in workers if x.exitcode not in (None, 0)]
+    if errored:
+      time.sleep(0.1)
+      name, code = errored[0].name, errored[0].exitcode
+      [x.kill() for x in workers]
+      raise RuntimeError(f"'{name}' crashed with exit code {code}")
 
 
 def parallel_agent(make_agent, args):
@@ -397,9 +415,9 @@ def parallel_logger(make_logger, args):
   server.bind('tran', tranfn)
   server.start(block=False)
   last_step = int(logger.step)
-  while True:
+  while not args.steps or int(logger.step) < args.steps:
     time.sleep(1)
-    if should_log() and active > 0:
+    if (should_log() or (args.steps and int(logger.step) >= args.steps)) and active > 0:
       active.reset()
       with elements.timer.section('metrics'):
         logger.add({'timer/logger': elements.timer.stats()['summary']})
@@ -415,6 +433,11 @@ def parallel_logger(make_logger, args):
       last_step = int(logger.step)
     if should_save():
       cp.save()
+  if int(logger.step) != last_step:
+    logger.write()
+  cp.save()
+  logger.close()
+  server.close()
 
 
 @elements.timer.section('env')
