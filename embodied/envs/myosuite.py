@@ -13,10 +13,13 @@ def _import_myosuite():
   if getattr(myosuite, '__file__', None) is not None:
     return myosuite
   bad_parents = {
-      str(pathlib.Path(p).parent) for p in getattr(myosuite, '__path__', [])}
+      str(pathlib.Path(p).resolve().parent)
+      for p in getattr(myosuite, '__path__', [])}
   saved_path = sys.path[:]
   try:
-    sys.path = [p for p in sys.path if p not in bad_parents]
+    sys.path = [
+        p for p in sys.path
+        if str(pathlib.Path(p or '.').resolve()) not in bad_parents]
     for key in [
         k for k in sys.modules
         if k == 'myosuite' or k.startswith('myosuite.')]:
