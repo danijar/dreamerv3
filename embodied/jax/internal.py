@@ -72,9 +72,17 @@ def setup(
         '--xla_gpu_enable_pipelined_reduce_scatter=true',
         '--xla_gpu_enable_reduce_scatter_combine_by_dim=false',
         '--xla_gpu_enable_triton_gemm=false',
-        '--xla_gpu_enable_triton_softmax_fusion=false',
         '--xla_gpu_enable_while_loop_double_buffering=true',
-        '--xla_gpu_graph_level=0',
+        *(
+            [
+                '--xla_gpu_enable_triton_softmax_fusion=false',
+                '--xla_gpu_graph_level=0',
+            ]
+            if tuple(
+                int(x) for x in jax.__version__.split('.')[:3] if x.isdigit()
+            ) < (0, 4, 35)
+            else ['--xla_gpu_enable_command_buffer=']
+        ),
         '--xla_gpu_reduce_scatter_combine_threshold_bytes=67108864',
     ]
   if tpuflags and platform == 'tpu':
