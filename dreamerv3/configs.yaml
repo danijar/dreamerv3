@@ -35,6 +35,8 @@ defaults:
     minecraft: {size: [64, 64], break_speed: 100.0, logs: False, length: 36000}
     dmc: {size: [64, 64], repeat: 1, proprio: True, image: True, camera: -1}
     loconav: {size: [64, 64], repeat: 1, camera: -1}
+    myosuite: {size: [64, 64], repeat: 1, proprio: True, image: False, log_image: False, camera: -1, use_seed: True}
+    myomjx: {impl: jax}
 
   replay:
     size: 5e6
@@ -194,6 +196,24 @@ loconav:
   task: loconav_ant_maze_m
   env.loconav.repeat: 1
   run.train_ratio: 256
+
+myosuite_proprio:
+  <<: *size12m
+  task: myosuite_myoElbowPose1D6MRandom-v0
+  env.myosuite: {proprio: True, image: False}
+  run: {steps: 5.1e6, train_ratio: 512}
+
+myosuite_vision:
+  <<: *size25m
+  task: myosuite_myoElbowPose1D6MRandom-v0
+  env.myosuite: {proprio: True, image: True}
+  run: {steps: 5.1e6, train_ratio: 256}
+
+myosuite_mjx:
+  <<: *size12m
+  script: train_mjx
+  task: myomjx_MjxElbowPoseRandom-v0
+  run: {steps: 1.1e7, envs: 64, train_ratio: 64}
 
 multicpu:
   batch_size: 12
