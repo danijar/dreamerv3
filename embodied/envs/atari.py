@@ -51,7 +51,7 @@ class Atari(embodied.Env):
     with self.LOCK:
       self.ale = ale_py.ALEInterface()
       self.ale.setLoggerMode(ale_py.LoggerMode.Error)
-      self.ale.setInt(b'random_seed', self.rng.integers(0, 2 ** 31))
+      self.ale.setInt('random_seed', int(self.rng.integers(0, 2 ** 31)))
       path = os.environ.get('ALE_ROM_PATH', None)
       if path:
         self.ale.loadROM(os.path.join(path, f'{name}.bin'))

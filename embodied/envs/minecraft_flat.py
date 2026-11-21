@@ -5,9 +5,12 @@ import elements
 import embodied
 import numpy as np
 
-np.float = float
-np.int = int
-np.bool = bool
+if not hasattr(np, 'float'):
+  np.float = float
+if not hasattr(np, 'int'):
+  np.int = int
+if not hasattr(np, 'bool'):
+  np.bool = bool
 
 from minerl.herobraine.env_spec import EnvSpec
 from minerl.herobraine.hero import handler

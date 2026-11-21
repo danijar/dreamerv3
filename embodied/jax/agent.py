@@ -172,13 +172,13 @@ class Agent(embodied.Agent):
 
     self._split = jax.jit(
         lambda xs: jax.tree.map(lambda x: list(x), xs),
-        internal.local_sharding(self.policy_sharded),
-        internal.local_sharding(self.policy_mirrored))
+        in_shardings=internal.local_sharding(self.policy_sharded),
+        out_shardings=internal.local_sharding(self.policy_mirrored))
     self._stack = jax.jit(
         lambda xs: jax.tree.map(
             jnp.stack, xs, is_leaf=lambda x: isinstance(x, list)),
-        internal.local_sharding(self.policy_mirrored),
-        internal.local_sharding(self.policy_sharded))
+        in_shardings=internal.local_sharding(self.policy_mirrored),
+        out_shardings=internal.local_sharding(self.policy_sharded))
 
     self._ckpt_groups = internal.grouped_ckpt_fns(
         self.params, self.jaxcfg.ckpt_chunksize)
@@ -415,7 +415,7 @@ class Agent(embodied.Agent):
     tm, ts = self.train_mirrored, self.train_sharded
     us = self.jaxcfg.use_shardmap
 
-    with jax._src.config.explicit_device_get_scope():
+    with jax.transfer_guard('allow'):
       seed = jax.device_put(np.array([self.config.seed, 0], np.uint32), tm)
     data = internal.device_put(self._zeros(self.spaces, (B, T + C)), ts)
     pr, ar = self.partition_rules
@@ -481,9 +481,10 @@ class Agent(embodied.Agent):
   def _format_jit_stats(self, compiled):
     try:
       cost = compiled.cost_analysis()
+      cost = cost[0] if isinstance(cost, (list, tuple)) else cost
       mem = compiled.memory_analysis()
       lines = []
-      lines.append(f"FLOPS:            {cost[0]['flops']:.1e}")
+      lines.append(f"FLOPS:            {cost['flops']:.1e}")
       lines.append(f"Memory (temp):    {mem.temp_size_in_bytes:.1e}")
       lines.append(f"Memory (inputs):  {mem.argument_size_in_bytes:.1e}")
       lines.append(f"Memory (outputs): {mem.output_size_in_bytes:.1e}")

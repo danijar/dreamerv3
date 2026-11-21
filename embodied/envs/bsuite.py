@@ -10,7 +10,8 @@ class BSuite(embodied.Env):
     print(
         'Warning: BSuite result logging is stateful and therefore training ' +
         'runs cannot be interrupted or restarted.')
-    np.int = int  # Patch deprecated Numpy alias used inside BSuite.
+    if not hasattr(np, 'int'):
+      np.int = int  # Patch deprecated Numpy alias used inside BSuite.
     from . import from_dm
     if '/' not in task:
       task = f'{task}/0'

@@ -133,7 +133,7 @@ def get_data_axes():
 def fetch_async(value):
   if is_multihost():
     value = to_local(value)
-  with jax._src.config.explicit_device_get_scope():
+  with jax.transfer_guard('allow'):
     [x.copy_to_host_async() for x in jax.tree.leaves(value)]
   return value
 
@@ -144,7 +144,7 @@ def is_multihost():
 
 def device_put(value, sharding):
   if is_multihost():
-    with jax._src.config.explicit_device_put_scope():
+    with jax.transfer_guard('allow'):
       value = jax.tree.map(
           lambda x: jax.make_array_from_process_local_data(sharding, x), value)
   else:
@@ -277,9 +277,13 @@ def ckpt_fn(params, compile=True):
   keys = params.keys()
   original = {k: params[k].sharding for k in keys}
   inspec = {k: struct(params[k], original[k]) for k in keys}
-  gather_fn = jax.jit(lambda x: x, (original,), mirrored).lower(inspec)
+  gather_fn = jax.jit(
+      lambda x: x, in_shardings=(original,), out_shardings=mirrored
+  ).lower(inspec)
   inspec = {k: struct(params[k], mirrored) for k in keys}
-  shard_fn = jax.jit(lambda x: x, (mirrored,), original).lower(inspec)
+  shard_fn = jax.jit(
+      lambda x: x, in_shardings=(mirrored,), out_shardings=original
+  ).lower(inspec)
   if compile:
     gather_fn = gather_fn.compile()
     shard_fn = shard_fn.compile()
