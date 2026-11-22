@@ -63,7 +63,7 @@ def train_eval(
       logger.add({
           'score': result.pop('score'),
           'length': result.pop('length'),
-      }, prefix='episode')
+      }, prefix='episode' if mode == 'train' else 'eval_episode')
       rew = result.pop('rewards')
       if len(rew) > 1:
         result['reward_rate'] = (np.abs(rew[1:] - rew[:-1]) >= 0.01).mean()
@@ -105,7 +105,7 @@ def train_eval(
 
   def reportfn(carry, stream):
     agg = elements.Agg()
-    for _ in range(args.report_batches):
+    for _ in range(args.consec_report * args.report_batches):
       batch = next(stream)
       carry, mets = agent.report(carry, batch)
       agg.add(mets)
@@ -118,7 +118,7 @@ def train_eval(
   cp.replay_eval = replay_eval
   if args.from_checkpoint:
     elements.checkpoint.load(args.from_checkpoint, dict(
-        agent=bind(agent.load, regex=args.from_checkpoint_regex)))
+        agent=bind(agent.load, regex=getattr(args, 'from_checkpoint_regex', None))))
   cp.load_or_save()
   should_save(step)  # Register that we just saved.
 
@@ -132,7 +132,7 @@ def train_eval(
       print('Evaluation')
       driver_eval.reset(agent.init_policy)
       driver_eval(eval_policy, episodes=args.eval_eps)
-      logger.add(eval_epstats.result(), prefix='epstats')
+      logger.add(eval_epstats.result(), prefix='eval_epstats')
       if len(replay_train):
         carry_report, mets = reportfn(carry_report, stream_report)
         logger.add(mets, prefix='report')
