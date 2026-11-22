@@ -11,6 +11,10 @@ from . import nets
 f32 = jnp.float32
 i32 = jnp.int32
 sg = jax.lax.stop_gradient
+_tree_norm = (
+    optax.tree.norm
+    if hasattr(getattr(optax, 'tree', None), 'norm')
+    else optax.global_norm)
 
 
 class Optimizer(nj.Module):
@@ -61,7 +65,7 @@ class Optimizer(nj.Module):
     updates, new_state = self.opt.update(grads, state.read(), params)
     nj.context().update(optax.apply_updates(params, updates))
     state.write(new_state)
-    grad_norm = optax.global_norm(grads)
+    grad_norm = _tree_norm(grads)
     if self.scaling:
       self._update_scale(grads, jnp.isfinite(grad_norm))
       grad_norm = jnp.where(jnp.isfinite(grad_norm), grad_norm, jnp.nan)

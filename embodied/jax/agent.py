@@ -17,6 +17,8 @@ P = jax.sharding.PartitionSpec
 from . import internal
 from . import transform
 
+_enter_mesh = jax.set_mesh if hasattr(jax, 'set_mesh') else (lambda m: m)
+
 
 @dataclasses.dataclass
 class Options:
@@ -109,7 +111,7 @@ class Agent(embodied.Agent):
     self.partition_rules = getattr(
         self.model, 'partition_rules', ([('.*', P())], []))
     elements.print('Initializing parameters...', color='yellow')
-    with self.train_mesh:
+    with _enter_mesh(self.train_mesh):
       self.params, self.train_params_sharding = self._init_params()
     elements.print('Done initializing!', color='yellow')
     pattern = re.compile(self.model.policy_keys)
@@ -184,7 +186,7 @@ class Agent(embodied.Agent):
         self.params, self.jaxcfg.ckpt_chunksize)
     if self.jaxcfg.precompile:
       elements.print('Compiling train and report...', color='yellow')
-      with self.train_mesh:
+      with _enter_mesh(self.train_mesh):
         self._compile_train()
         print('Train cost analysis:')
         print(self._format_jit_stats(self._train))
