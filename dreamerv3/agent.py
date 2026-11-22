@@ -14,6 +14,10 @@ from . import rssm
 
 f32 = jnp.float32
 i32 = jnp.int32
+_tree_norm = (
+    optax.tree.norm
+    if hasattr(getattr(optax, 'tree', None), 'norm')
+    else optax.global_norm)
 sg = lambda xs, skip=False: xs if skip else jax.lax.stop_gradient(xs)
 sample = lambda xs: jax.tree.map(lambda x: x.sample(nj.seed()), xs)
 prefix = lambda xs, p: {f'{p}/{k}': v for k, v in xs.items()}
@@ -266,7 +270,7 @@ class Agent(embodied.jax.Agent):
           lossfn = lambda data, carry: self.loss(
               carry, obs, prevact, training=False)[1][2]['losses'][key].mean()
           grad = nj.grad(lossfn, self.modules)(data, carry)[-1]
-          metrics[f'gradnorm/{key}'] = optax.global_norm(grad)
+          metrics[f'gradnorm/{key}'] = _tree_norm(grad)
         except KeyError:
           print(f'Skipping gradnorm summary for missing loss: {key}')
 

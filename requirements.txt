@@ -1,19 +1,21 @@
-ale_py==0.9.0
-autorom[accept-rom-license]==0.6.1
-av
-chex
+ale-py>=0.10.0
+av>=12.0.0
+chex>=0.1.86
+cloudpickle>=3.0.0
 colored_traceback
-einops
+einops>=0.8.0
 elements>=3.19.1
 google-resumable-media>=2.7.2
 granular>=0.20.3
-ipdb
-jax[cuda12]==0.4.33
+gymnasium>=0.29.1
+jax>=0.4.33
 jaxtyping
 ninjax>=3.5.1
-numpy<2  # DMLab: <2, MineRLv1.0: <1.24
-nvidia-cuda-nvcc-cu12<=12.2
-optax
+# Legacy DMLab (<2) and MineRLv1.0 (<1.24) require older NumPy if used.
+numpy>=1.26.0
+optax>=0.2.2
+pillow>=10.0.0
 portal>=3.5.0
+ruamel.yaml>=0.18.0
 scope>=0.4.4
-tqdm
+tqdm>=4.66.0
