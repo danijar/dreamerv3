@@ -169,12 +169,13 @@ class Agent(embodied.jax.Agent):
     metrics.update(mets)
     dec_carry, dec_entries, recons = self.dec(
         dec_carry, repfeat, reset, training)
-    inp = sg(self.feat2tensor(repfeat), skip=self.config.reward_grad)
+    repfeat_tensor = self.feat2tensor(repfeat)
+    inp = sg(repfeat_tensor, skip=self.config.reward_grad)
     losses['rew'] = self.rew(inp, 2).loss(obs['reward'])
     con = f32(~obs['is_terminal'])
     if self.config.contdisc:
       con *= 1 - 1 / self.config.horizon
-    losses['con'] = self.con(self.feat2tensor(repfeat), 2).loss(con)
+    losses['con'] = self.con(repfeat_tensor, 2).loss(con)
     for key, recon in recons.items():
       space, value = self.obs_space[key], obs[key]
       assert value.dtype == space.dtype, (key, space, value.dtype)
@@ -396,7 +397,8 @@ def imag_loss(
 
   voffset, vscale = valnorm.stats()
   val = value.pred() * vscale + voffset
-  slowval = slowvalue.pred() * vscale + voffset
+  slowval_pred = slowvalue.pred()
+  slowval = slowval_pred * vscale + voffset
   tarval = slowval if slowtar else val
   disc = 1 if contdisc else 1 - 1 / horizon
   weight = jnp.cumprod(disc * con, 1) / disc
@@ -419,7 +421,7 @@ def imag_loss(
   tar_padded = jnp.concatenate([tar_normed, 0 * tar_normed[:, -1:]], 1)
   losses['value'] = sg(weight[:, :-1]) * (
       value.loss(sg(tar_padded)) +
-      slowreg * value.loss(sg(slowvalue.pred())))[:, :-1]
+      slowreg * value.loss(sg(slowval_pred)))[:, :-1]
 
   ret_normed = (ret - roffset) / rscale
   metrics['adv'] = adv.mean()
@@ -459,7 +461,8 @@ def repl_loss(
 
   voffset, vscale = valnorm.stats()
   val = value.pred() * vscale + voffset
-  slowval = slowvalue.pred() * vscale + voffset
+  slowval_pred = slowvalue.pred()
+  slowval = slowval_pred * vscale + voffset
   tarval = slowval if slowtar else val
   disc = 1 - 1 / horizon
   weight = f32(~last)
@@ -470,7 +473,7 @@ def repl_loss(
   ret_padded = jnp.concatenate([ret_normed, 0 * ret_normed[:, -1:]], 1)
   losses['repval'] = weight[:, :-1] * (
       value.loss(sg(ret_padded)) +
-      slowreg * value.loss(sg(slowvalue.pred())))[:, :-1]
+      slowreg * value.loss(sg(slowval_pred)))[:, :-1]
 
   outs = {}
   outs['ret'] = ret
@@ -481,10 +484,18 @@ def repl_loss(
 
 def lambda_return(last, term, rew, val, boot, disc, lam):
   chex.assert_equal_shape((last, term, rew, val, boot))
-  rets = [boot[:, -1]]
+  if boot.shape[1] <= 1:
+    return boot[:, :0]
   live = (1 - f32(term))[:, 1:] * disc
   cont = (1 - f32(last))[:, 1:] * lam
   interm = rew[:, 1:] + (1 - cont) * live * boot[:, 1:]
-  for t in reversed(range(live.shape[1])):
-    rets.append(interm[:, t] + live[:, t] * cont[:, t] * rets[-1])
-  return jnp.stack(list(reversed(rets))[:-1], 1)
+  mult = live * cont
+  def step(carry, xs):
+    interm_t, mult_t = xs
+    ret = interm_t + mult_t * carry
+    return ret, ret
+  _, rets = jax.lax.scan(
+      step, boot[:, -1],
+      (jnp.moveaxis(interm, 1, 0), jnp.moveaxis(mult, 1, 0)),
+      reverse=True)
+  return jnp.moveaxis(rets, 0, 1)
