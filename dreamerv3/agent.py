@@ -80,6 +80,8 @@ class Agent(embodied.jax.Agent):
     scales = self.config.loss_scales.copy()
     rec = scales.pop('rec')
     scales.update({k: rec for k in dec_space})
+    if not config.repval_loss:
+      scales.pop('repval')
     self.scales = scales
 
   @property
